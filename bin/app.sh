@@ -5,6 +5,12 @@
 #   app.sh enable <name>     # enable & start systemd timer
 #   app.sh disable <name>    # disable & stop systemd timer
 #   app.sh remove <name>     # disable timer and delete project
+#   app.sh deploy <name>     # build & up (force deploy)
+#   app.sh start <name>      # compose up -d
+#   app.sh stop <name>       # compose down
+#   app.sh restart <name>    # compose restart
+#   app.sh logs <name> [svc] # compose logs
+#   app.sh list              # list apps and status
 set -euo pipefail
 
 INSTALL_DIR=${INSTALL_DIR:-/opt/multi-deploy}
@@ -91,6 +97,53 @@ extract_traefik_labels() {
 
 ensure_dirs() {
   mkdir -p "$PROJECTS_DIR"
+}
+
+load_project() {
+  local name="$1"
+  PROJ_META_DIR="$PROJECTS_DIR/$name"
+  PROJ_ENV="$PROJ_META_DIR/project.env"
+  PROJ_REPO_DIR="$PROJ_META_DIR/code"
+  PROJ_OVERRIDE="$PROJ_META_DIR/compose.server.yml"
+  if [[ ! -f "$PROJ_ENV" ]]; then red "Missing $PROJ_ENV"; exit 1; fi
+  # shellcheck disable=SC1090
+  source "$PROJ_ENV"
+  if [[ -z "${COMPOSE_FILE:-}" ]]; then red "COMPOSE_FILE not set in $PROJ_ENV"; exit 1; fi
+  PROJ_COMPOSE_BASE="$PROJ_REPO_DIR/$COMPOSE_FILE"
+}
+
+resolve_env_file() {
+  COMPOSE_ENV_ARG=()
+  local ef="${ENV_FILE:-}"
+  if [[ -n "$ef" ]]; then
+    if [[ -f "$ef" ]]; then
+      COMPOSE_ENV_ARG=(--env-file "$ef")
+    elif [[ -f "$PROJ_REPO_DIR/$ef" ]]; then
+      COMPOSE_ENV_ARG=(--env-file "$PROJ_REPO_DIR/$ef")
+    else
+      echo "Warning: env file not found: $ef" >&2
+    fi
+  fi
+}
+
+build_compose_cmd() {
+  compose_cmd=(docker compose)
+  # optional env file
+  if (( ${#COMPOSE_ENV_ARG[@]} > 0 )); then
+    compose_cmd+=("${COMPOSE_ENV_ARG[@]}")
+  fi
+  compose_cmd+=(-f "$PROJ_COMPOSE_BASE")
+  if [[ -f "$PROJ_OVERRIDE" ]]; then
+    compose_cmd+=(-f "$PROJ_OVERRIDE")
+  fi
+}
+
+ensure_repo() {
+  # Clone if repo missing, using existing watch-and-deploy logic
+  if [[ ! -d "$PROJ_REPO_DIR/.git" ]]; then
+    echo "Cloning repo for project '$NAME' into $PROJ_REPO_DIR ..."
+    "$INSTALL_DIR/bin/watch-and-deploy.sh" "$REPO" "$NAME" "$BRANCH" "$COMPOSE_FILE" "${ENV_FILE:-}"
+  fi
 }
 
 cmd_create() {
@@ -296,6 +349,111 @@ cmd_remove() {
   echo "Project '$name' removed."
 }
 
+cmd_deploy() {
+  local name=${1:-}
+  if [[ -z "$name" ]]; then red "Usage: $(basename "$0") deploy <name>"; exit 1; fi
+  load_project "$name"
+  resolve_env_file
+  ensure_repo
+  build_compose_cmd
+  echo "Building images..."
+  "${compose_cmd[@]}" build --pull
+  echo "Applying stack..."
+  "${compose_cmd[@]}" up -d --remove-orphans
+  echo "Deployed '$name'"
+}
+
+cmd_start() {
+  local name=${1:-}
+  if [[ -z "$name" ]]; then red "Usage: $(basename "$0") start <name>"; exit 1; fi
+  load_project "$name"
+  resolve_env_file
+  ensure_repo
+  build_compose_cmd
+  "${compose_cmd[@]}" up -d
+  echo "Started '$name'"
+}
+
+cmd_stop() {
+  local name=${1:-}
+  if [[ -z "$name" ]]; then red "Usage: $(basename "$0") stop <name>"; exit 1; fi
+  load_project "$name"
+  resolve_env_file
+  ensure_repo
+  build_compose_cmd
+  "${compose_cmd[@]}" down
+  echo "Stopped '$name'"
+}
+
+cmd_restart() {
+  local name=${1:-}
+  if [[ -z "$name" ]]; then red "Usage: $(basename "$0") restart <name>"; exit 1; fi
+  load_project "$name"
+  resolve_env_file
+  ensure_repo
+  build_compose_cmd
+  # Prefer compose restart for speed
+  "${compose_cmd[@]}" restart || { "${compose_cmd[@]}" up -d --force-recreate; }
+  echo "Restarted '$name'"
+}
+
+cmd_logs() {
+  local name=${1:-}
+  local svc=${2:-}
+  if [[ -z "$name" ]]; then red "Usage: $(basename "$0") logs <name> [service]"; exit 1; fi
+  load_project "$name"
+  resolve_env_file
+  ensure_repo
+  build_compose_cmd
+  if [[ -n "$svc" ]]; then
+    "${compose_cmd[@]}" logs -f --tail=200 "$svc"
+  else
+    "${compose_cmd[@]}" logs -f --tail=200
+  fi
+}
+
+cmd_list() {
+  ensure_dirs
+  printf "%-24s %-12s %-18s\n" "NAME" "AUTO-DEPLOY" "CONTAINERS"
+  printf "%-24s %-12s %-18s\n" "------------------------" "------------" "------------------"
+  local d name envf auto out lines running total
+  for d in "$PROJECTS_DIR"/*; do
+    [[ -d "$d" ]] || continue
+    envf="$d/project.env"
+    [[ -f "$envf" ]] || continue
+    name="$(basename "$d")"
+    # Auto-deploy (timer) status
+    if systemctl --quiet is-enabled "multi-deploy@${name}.timer" 2>/dev/null; then
+      auto="enabled"
+    else
+      auto="disabled"
+    fi
+    # Container status
+    # shellcheck disable=SC1090
+    source "$envf" || true
+    PROJ_META_DIR="$d"
+    PROJ_REPO_DIR="$d/code"
+    PROJ_OVERRIDE="$d/compose.server.yml"
+    PROJ_COMPOSE_BASE="$PROJ_REPO_DIR/${COMPOSE_FILE:-}"
+    resolve_env_file || true
+    build_compose_cmd || true
+    out=$({ "${compose_cmd[@]}" ps 2>/dev/null || true; } | sed '/^$/d')
+    if [[ -z "$out" || ! -f "$PROJ_COMPOSE_BASE" ]]; then
+      printf "%-24s %-12s %-18s\n" "$name" "$auto" "stopped"
+      continue
+    fi
+    # Count containers excluding header row
+    lines=$(echo "$out" | awk 'NR>1 {print}' | wc -l | tr -d ' ')
+    if [[ "$lines" == "0" ]]; then
+      printf "%-24s %-12s %-18s\n" "$name" "$auto" "stopped"
+      continue
+    fi
+    running=$(echo "$out" | grep -i "running" | wc -l | tr -d ' ')
+    total="$lines"
+    printf "%-24s %-12s %-18s\n" "$name" "$auto" "running ${running}/${total}"
+  done
+}
+
 usage() {
   cat <<USAGE
 Usage:
@@ -303,6 +461,12 @@ Usage:
   $(basename "$0") enable <name>     # enable & start systemd timer
   $(basename "$0") disable <name>    # disable & stop systemd timer
   $(basename "$0") remove <name>     # disable timer and delete project
+  $(basename "$0") deploy <name>     # build & up (force deploy)
+  $(basename "$0") start <name>      # compose up -d
+  $(basename "$0") stop <name>       # compose down
+  $(basename "$0") restart <name>    # compose restart
+  $(basename "$0") logs <name> [svc] # compose logs
+  $(basename "$0") list              # list apps and status
 USAGE
 }
 
@@ -313,6 +477,12 @@ main() {
     enable) shift || true; cmd_enable "$@" ;;
     disable) shift || true; cmd_disable "$@" ;;
     remove) shift || true; cmd_remove "$@" ;;
+    deploy) shift || true; cmd_deploy "$@" ;;
+    start)  shift || true; cmd_start "$@" ;;
+    stop)   shift || true; cmd_stop "$@" ;;
+    restart)shift || true; cmd_restart "$@" ;;
+    logs)   shift || true; cmd_logs "$@" ;;
+    list)   shift || true; cmd_list "$@" ;;
     -h|--help|help|"") usage ;;
     *) red "Unknown command: $cmd"; echo; usage; exit 1 ;;
   esac

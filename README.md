@@ -44,6 +44,48 @@ The installer will:
 Disable anytime: `app.sh disable <name>`
 Remove an app: `app.sh remove <name>`
 
+## CLI reference (app.sh)
+
+- `create`
+  - Interactive setup wizard
+- `enable <name>`
+  - Enable and start the per-app systemd timer
+- `disable <name>`
+  - Disable and stop the per-app systemd timer
+- `remove <name>`
+  - Disable timer and delete `/opt/multi-deploy/projects/<name>`
+- `deploy <name>`
+  - Force deploy now: `docker compose build --pull` then `up -d --remove-orphans`
+- `start <name>`
+  - Start services: `docker compose up -d`
+- `stop <name>`
+  - Stop services: `docker compose down`
+- `restart <name>`
+  - Restart services: `docker compose restart` (falls back to `up -d --force-recreate`)
+- `logs <name> [service]`
+  - Stream logs with `docker compose logs -f --tail=200`
+- `list`
+  - List all apps with auto-deploy status and container status (e.g., `running 2/3` or `stopped`)
+
+Examples:
+
+```bash
+# Manage auto-deploy
+app.sh enable myapp
+app.sh disable myapp
+
+# Operate the stack
+app.sh deploy myapp
+app.sh start myapp
+app.sh stop myapp
+app.sh restart myapp
+app.sh logs myapp            # all services
+app.sh logs myapp api        # one service
+
+# Overview
+app.sh list
+```
+
 ## How it works
 
 - Traefik runs globally from `/opt/multi-deploy/traefik` on a shared Docker network named `web`
