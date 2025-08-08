@@ -15,7 +15,7 @@ entryPoints:
 certificatesResolvers:
   letsencrypt:
     acme:
-      email: hello@wedomagic.ai
+      # Email is configured via environment variable mapping in docker-compose.yml
       storage: /letsencrypt/acme.json
       tlsChallenge: {}
 

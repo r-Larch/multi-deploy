@@ -37,11 +37,19 @@ if ! grep -q "github.com" /root/.ssh/known_hosts 2>/dev/null; then
   ssh-keyscan -t ed25519 github.com >> /root/.ssh/known_hosts
 fi
 
+# Configure Traefik ACME email
+read -r -p "Enter email for Let's Encrypt (TRAEFIK_ACME_EMAIL) [admin@example.com]: " TRAEFIK_ACME_EMAIL || true
+TRAEFIK_ACME_EMAIL=${TRAEFIK_ACME_EMAIL:-admin@example.com}
+mkdir -p "$INSTALL_DIR/traefik"
+cat >"$INSTALL_DIR/traefik/.env" <<EOF
+TRAEFIK_ACME_EMAIL=$TRAEFIK_ACME_EMAIL
+EOF
+
 # Start global Traefik (shared network 'web')
 mkdir -p "$INSTALL_DIR/traefik/letsencrypt"
 chmod 700 "$INSTALL_DIR/traefik/letsencrypt"
 cd "$INSTALL_DIR/traefik"
-docker compose up -d
+docker compose --env-file ./.env up -d
 
 # Install systemd units
 cp "$INSTALL_DIR/etc/systemd/multi-deploy@.service" /etc/systemd/system/

@@ -9,6 +9,8 @@ services:
       - "--configFile=/etc/traefik/traefik.yml"
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
+    environment:
+      - TRAEFIK_CERTIFICATESRESOLVERS_LETSENCRYPT_ACME_EMAIL=${TRAEFIK_ACME_EMAIL}
     ports:
       - "80:80"
       - "443:443"
