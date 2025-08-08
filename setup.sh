@@ -31,6 +31,12 @@ fi
 # Ensure Docker service is running
 systemctl enable --now docker || true
 
+# Add invoking user to docker group (if run via sudo)
+if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+  usermod -aG docker "$SUDO_USER" || true
+  echo "Added $SUDO_USER to docker group (re-login required)"
+fi
+
 # --- Fetch repo (idempotent) ---
 mkdir -p "$INSTALL_DIR"
 TMP_DIR=$(mktemp -d)
@@ -44,13 +50,22 @@ else
   exit 1
 fi
 
+# Ensure directories and executable bits
+mkdir -p "$INSTALL_DIR/projects"
+chmod +x "$INSTALL_DIR"/bin/*.sh || true
+chmod 0644 "$INSTALL_DIR"/etc/systemd/*.service "$INSTALL_DIR"/etc/systemd/*.timer || true
+
 # --- Optional: Prepare SSH (for private repos). Not required for public HTTPS clones ---
-if [[ ! -f /root/.ssh/id_ed25519 ]]; then
-  ssh-keygen -t ed25519 -N "" -f /root/.ssh/id_ed25519
+SSH_KEY_PATH="/root/.ssh/id_ed25519"
+if [[ ! -f "$SSH_KEY_PATH" ]]; then
+  ssh-keygen -t ed25519 -N "" -f "$SSH_KEY_PATH"
   echo "Generated SSH key. Add this public key to GitHub deploy keys if you plan to use SSH URLs:" 
   echo
-  cat /root/.ssh/id_ed25519.pub
+  cat "$SSH_KEY_PATH.pub"
   echo
+  echo "If you use SSH for git, ensure your shell has an active ssh-agent and the key is loaded:"
+  echo "  eval \"\$(ssh-agent -s)\""
+  echo "  ssh-add $SSH_KEY_PATH"
 fi
 
 # Preload GitHub host key (useful for SSH)
@@ -71,13 +86,35 @@ EOF
 # --- Start global Traefik (shared network 'web') ---
 mkdir -p "$INSTALL_DIR/traefik/letsencrypt"
 chmod 700 "$INSTALL_DIR/traefik/letsencrypt"
+# Pre-create acme.json with secure permissions
+if [[ ! -f "$INSTALL_DIR/traefik/letsencrypt/acme.json" ]]; then
+  touch "$INSTALL_DIR/traefik/letsencrypt/acme.json"
+  chmod 600 "$INSTALL_DIR/traefik/letsencrypt/acme.json"
+fi
 cd "$INSTALL_DIR/traefik"
 # Ensure shared network exists (idempotent)
 if ! docker network inspect web >/dev/null 2>&1; then
   docker network create web >/dev/null
 fi
+# Warn if ports 80/443 are already in use
+check_port() { local p=$1; if ss -ltn | awk '{print $4}' | grep -q ":${p}$"; then echo "Warning: port $p appears in use. Traefik may fail to bind."; fi; }
+check_port 80
+check_port 443
+# Optionally open UFW ports if firewall is active
+if command -v ufw >/dev/null 2>&1 && ufw status | grep -q "Status: active"; then
+  ufw allow 80/tcp || true
+  ufw allow 443/tcp || true
+  echo "Opened ports 80/443 in UFW firewall."
+fi
 # Bring up Traefik with env file
 docker compose --env-file ./.env up -d
+# Health check
+sleep 2
+if ! docker ps | grep -q traefik; then
+  echo "ERROR: Traefik container did not start. Check logs: docker logs traefik" >&2
+else
+  echo "Traefik is running."
+fi
 
 # --- Install systemd units ---
 cp "$INSTALL_DIR/etc/systemd/multi-deploy@.service" /etc/systemd/system/
@@ -94,3 +131,9 @@ echo "  1) Re-login or run: source /etc/profile.d/multi-deploy-path.sh"
 echo "  2) Create an app:   app.sh create"
 echo "  3) Configure it in: $INSTALL_DIR/projects/<name>/code"
 echo "  4) Enable deploys:  app.sh enable <name>"
+echo "  5) Remove app:      app.sh remove <name>"
+# Remove example project if present
+if [[ -d "$INSTALL_DIR/projects/example" ]]; then
+  rm -rf "$INSTALL_DIR/projects/example"
+  echo "Removed example project."
+fi

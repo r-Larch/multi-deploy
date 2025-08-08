@@ -42,6 +42,7 @@ The installer will:
    - A systemd timer will poll every minute: fetch, build if changed, and `up -d --remove-orphans`
 
 Disable anytime: `app.sh disable <name>`
+Remove an app: `app.sh remove <name>`
 
 ## How it works
 
@@ -68,6 +69,9 @@ Disable anytime: `app.sh disable <name>`
 Git access
 
 - Repos can be public (HTTPS or SSH) or private (SSH recommended). Setup generates an SSH key and preloads GitHub host key. Use HTTPS if you prefer for public repos.
+- If using SSH, ensure your shell has an active ssh-agent and your key is loaded:
+  - `eval "$(ssh-agent -s)"`
+  - `ssh-add /root/.ssh/id_ed25519`
 
 ## Compose and Traefik tips
 
@@ -86,6 +90,7 @@ Git access
 ## Uninstall / Cleanup
 
 - Disable timers: `app.sh disable <name>` for each app
+- Remove apps: `app.sh remove <name>`
 - Stop Traefik: `cd /opt/multi-deploy/traefik && docker compose down`
 - Remove directory: `rm -rf /opt/multi-deploy` (be careful)
 

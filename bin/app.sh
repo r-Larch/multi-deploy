@@ -4,6 +4,7 @@
 #   app.sh create            # interactive project setup
 #   app.sh enable <name>     # enable & start systemd timer
 #   app.sh disable <name>    # disable & stop systemd timer
+#   app.sh remove <name>     # disable timer and delete project
 set -euo pipefail
 
 INSTALL_DIR=${INSTALL_DIR:-/opt/multi-deploy}
@@ -274,12 +275,34 @@ cmd_disable() {
   echo "Disabled timer for '$name'"
 }
 
+cmd_remove() {
+  local name=${1:-}
+  local proj_dir="$PROJECTS_DIR/$name"
+  if [[ -z "$name" ]]; then red "Usage: $(basename "$0") remove <name>"; exit 1; fi
+  if [[ ! -d "$proj_dir" ]]; then red "Project '$name' not found at $proj_dir"; exit 1; fi
+  bold "Disabling timer for '$name'..."
+  if [[ ${EUID:-$UID} -ne 0 ]]; then
+    sudo systemctl disable --now "multi-deploy@${name}.timer"
+  else
+    systemctl disable --now "multi-deploy@${name}.timer"
+  fi
+  bold "Removing project directory: $proj_dir"
+  rm -rf "$proj_dir"
+  # Remove example project if present
+  if [[ "$name" == "example" && -d "$PROJECTS_DIR/example" ]]; then
+    rm -rf "$PROJECTS_DIR/example"
+    echo "Example project removed."
+  fi
+  echo "Project '$name' removed."
+}
+
 usage() {
   cat <<USAGE
 Usage:
   $(basename "$0") create            # interactive project setup
   $(basename "$0") enable <name>     # enable & start systemd timer
   $(basename "$0") disable <name>    # disable & stop systemd timer
+  $(basename "$0") remove <name>     # disable timer and delete project
 USAGE
 }
 
@@ -289,6 +312,7 @@ main() {
     create) shift || true; cmd_create "$@" ;;
     enable) shift || true; cmd_enable "$@" ;;
     disable) shift || true; cmd_disable "$@" ;;
+    remove) shift || true; cmd_remove "$@" ;;
     -h|--help|help|"") usage ;;
     *) red "Unknown command: $cmd"; echo; usage; exit 1 ;;
   esac
