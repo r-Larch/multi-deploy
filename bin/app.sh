@@ -115,13 +115,16 @@ load_project() {
 resolve_env_file() {
   COMPOSE_ENV_ARG=()
   local ef="${ENV_FILE:-}"
+  local silent="${1:-}"
   if [[ -n "$ef" ]]; then
     if [[ -f "$ef" ]]; then
       COMPOSE_ENV_ARG=(--env-file "$ef")
     elif [[ -f "$PROJ_REPO_DIR/$ef" ]]; then
       COMPOSE_ENV_ARG=(--env-file "$PROJ_REPO_DIR/$ef")
     else
-      echo "Warning: env file not found: $ef" >&2
+      if [[ "$silent" != "silent" ]]; then
+        echo "Warning: env file not found: $ef" >&2
+      fi
     fi
   fi
 }
@@ -435,7 +438,7 @@ cmd_list() {
     PROJ_REPO_DIR="$d/code"
     PROJ_OVERRIDE="$d/compose.server.yml"
     PROJ_COMPOSE_BASE="$PROJ_REPO_DIR/${COMPOSE_FILE:-}"
-    resolve_env_file || true
+    resolve_env_file silent || true
     build_compose_cmd || true
     out=$({ "${compose_cmd[@]}" ps 2>/dev/null || true; } | sed '/^$/d')
     if [[ -z "$out" || ! -f "$PROJ_COMPOSE_BASE" ]]; then
