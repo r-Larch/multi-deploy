@@ -12,10 +12,14 @@ Approach:
 
 Directories
 - `server/traefik/`          Global Traefik config and acme storage
-- `server/projects/`         Project repo worktrees (cloned here)
+- `server/projects/`         Hosted Projects
+  - `./example/`             Example project definition
+    - `./code/`              Project repo worktree (cloned here)
+    - `./project.env`        Project environment
+    - `./compose.server.yml` Server compose file
+- `server/projects/example/` Example project definition
 - `server/bin/`              Management scripts
 - `server/etc/systemd/`      Systemd unit and timer templates
-- `server/example/`          Example project definition
 
 Global requirements on server
 - Ubuntu 22.04+
@@ -27,11 +31,11 @@ SSH access to GitHub
 - Generate SSH key on server (no passphrase) and add the public key to your GitHub org/user deploy keys with read access.
 
 Usage
-1. Copy this `server/` tree to your server (e.g., `/opt/multi-deploy`).
+1. Copy this `./` tree to your server (e.g., `/opt/multi-deploy`).
 2. Create SSH key and known_hosts entries.
 3. Configure Traefik (acme email, storage path) and start the global proxy.
-4. Add a project definition (e.g., `server/example/project.env`).
-5. Enable the systemd timer for periodic auto-deploy.
+4. Add a project definition (e.g., run `./bin/new-project.sh`).
+5. Script enables the systemd timer for periodic auto-deploy.
 
 Notes
 - Traefik runs as a global container and projects only carry labels.

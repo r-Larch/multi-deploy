@@ -7,7 +7,7 @@ Wants=network-online.target docker.service
 Type=oneshot
 User=root
 WorkingDirectory=/opt/multi-deploy
-EnvironmentFile=/opt/multi-deploy/%i/project.env
+EnvironmentFile=/opt/multi-deploy/projects/%i/project.env
 ExecStart=/usr/bin/env bash -lc '/opt/multi-deploy/bin/watch-and-deploy.sh ${REPO} ${NAME} ${BRANCH} ${COMPOSE_FILE} ${ENV_FILE}'
 
 [Install]
