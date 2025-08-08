@@ -39,8 +39,8 @@ Usage
 1. Copy this `./` tree to your server (e.g., `/opt/multi-deploy`).
 2. Create SSH key and known_hosts entries.
 3. Configure Traefik (acme email, storage path) and start the global proxy.
-4. Add a project definition (e.g., run `./bin/new-project.sh`).
-5. Script enables the systemd timer for periodic auto-deploy.
+4. Create a project: `/opt/multi-deploy/bin/app.sh create`.
+5. Configure your app in `/opt/multi-deploy/projects/<name>/code`, then enable: `/opt/multi-deploy/bin/app.sh enable <name>`.
 
 Notes
 

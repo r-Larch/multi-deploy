@@ -52,5 +52,6 @@ systemctl daemon-reload
 # systemctl enable --now multi-deploy@example.timer
 
 echo "Setup complete. To add more projects:"
-echo "  mkdir -p $INSTALL_DIR/<project>; cp -n $INSTALL_DIR/example/project.env $INSTALL_DIR/<project>/project.env; edit values"
-echo "  systemctl enable --now multi-deploy@<project>.timer"
+echo "  $INSTALL_DIR/bin/app.sh create"
+echo "  # Then configure your repo at $INSTALL_DIR/projects/<project>/code if needed"
+echo "  $INSTALL_DIR/bin/app.sh enable <project>"
