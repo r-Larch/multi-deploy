@@ -1,0 +1,42 @@
+# Global Traefik configuration for multi-project hosting
+api:
+  dashboard: false
+
+providers:
+  docker:
+    exposedByDefault: false
+
+entryPoints:
+  web:
+    address: ":80"
+  websecure:
+    address: ":443"
+
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      email: hello@wedomagic.ai
+      storage: /letsencrypt/acme.json
+      tlsChallenge: {}
+
+http:
+  middlewares:
+    security-headers:
+      headers:
+        hostsProxyHeaders:
+          - "X-Forwarded-Host"
+        referrerPolicy: "same-origin"
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+        stsPreload: true
+        forceSTSHeader: true
+        # Headers for WebSocket and SSE support
+        customResponseHeaders:
+          X-Frame-Options: "SAMEORIGIN"
+          X-Content-Type-Options: "nosniff"
+
+serversTransport:
+  forwardingTimeouts:
+    dialTimeout: "30s"
+    responseHeaderTimeout: "0s"
+    idleConnTimeout: "90s"

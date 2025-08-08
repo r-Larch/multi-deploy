@@ -1,0 +1,11 @@
+[Unit]
+Description=Timer for multi-deploy %i
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=10s
+Unit=multi-deploy@%i.service
+
+[Install]
+WantedBy=timers.target
