@@ -83,7 +83,7 @@ list_services_from_compose() {
 extract_traefik_labels() {
   # Grep traefik labels present in the compose file (best-effort)
   local compose_path="$1"
-  grep -nE '\btraefik\.' "$compose_path" || true
+  grep -n "traefik\." "$compose_path" || true
 }
 
 ensure_dirs() {
@@ -130,8 +130,20 @@ main() {
     git clone "$repo" "$repo_dir"
   fi
 
-  # Checkout branch
-  (cd "$repo_dir" && git checkout "$branch" && git pull --ff-only || true)
+  # Robust checkout of branch
+  (
+    cd "$repo_dir"
+    git fetch --all --prune
+    if git show-ref --verify --quiet "refs/heads/$branch"; then
+      git checkout "$branch"
+      git pull --ff-only || true
+    elif git show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+      git checkout -B "$branch" --track "origin/$branch"
+      git pull --ff-only || true
+    else
+      red "Branch '$branch' not found on origin. Staying on current branch." || true
+    fi
+  )
 
   # Detect compose file in repo root
   local compose_file
@@ -153,7 +165,8 @@ main() {
   echo "Found services: ${services[*]}"
 
   # Choose the primary service to expose via Traefik
-  local svc="$1" # optional arg
+  local svc=""
+  if (( $# >= 1 )); then svc="$1"; fi
   if [[ -z "${svc:-}" ]]; then
     echo
     echo "Select the service to expose behind Traefik:"

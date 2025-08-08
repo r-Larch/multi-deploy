@@ -21,8 +21,15 @@ if [[ ! -d "$proj_dir/.git" ]]; then
   git clone "$repo" "$proj_dir"
 fi
 
-if [[ -n "$env_file" && -f "$env_file" ]]; then
-  export COMPOSE_ENV_FILE="$env_file"
+# Resolve optional env file; if relative, make it relative to repo worktree
+if [[ -n "$env_file" ]]; then
+  if [[ -f "$env_file" ]]; then
+    export COMPOSE_ENV_FILE="$env_file"
+  elif [[ -f "$proj_dir/$env_file" ]]; then
+    export COMPOSE_ENV_FILE="$proj_dir/$env_file"
+  else
+    echo "Warning: env file not found: $env_file" >&2
+  fi
 fi
 
 compose_files=("$compose_file")
