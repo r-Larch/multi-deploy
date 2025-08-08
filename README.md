@@ -28,7 +28,7 @@ The installer will:
 ## Create your first app
 
 1. Create the app definition
-   - Run: `app.sh create`
+   - Run: `app create`
    - Answer prompts (name, repo SSH/HTTPS, branch, service and domain)
    - The repo will be cloned into `/opt/multi-deploy/projects/<name>/code`
    - The script generates `/opt/multi-deploy/projects/<name>/compose.server.yml` with Traefik labels and joins the shared `web` network
@@ -38,13 +38,13 @@ The installer will:
    - Set env, secrets, run migrations, etc.
 
 3. Enable auto-deploy
-   - Run: `app.sh enable <name>`
+   - Run: `app enable <name>`
    - A systemd timer will poll every minute: fetch, build if changed, and `up -d --remove-orphans`
 
-Disable anytime: `app.sh disable <name>`
-Remove an app: `app.sh remove <name>`
+Disable anytime: `app disable <name>`
+Remove an app: `app remove <name>`
 
-## CLI reference (app.sh)
+## CLI reference (app)
 
 - `create`
   - Interactive setup wizard
@@ -71,19 +71,19 @@ Examples:
 
 ```bash
 # Manage auto-deploy
-app.sh enable myapp
-app.sh disable myapp
+app enable myapp
+app disable myapp
 
 # Operate the stack
-app.sh deploy myapp
-app.sh start myapp
-app.sh stop myapp
-app.sh restart myapp
-app.sh logs myapp            # all services
-app.sh logs myapp api        # one service
+app deploy myapp
+app start myapp
+app stop myapp
+app restart myapp
+app logs myapp            # all services
+app logs myapp api        # one service
 
 # Overview
-app.sh list
+app list
 ```
 
 ## How it works
@@ -100,7 +100,7 @@ app.sh list
   - `code/`                           App git worktree (your repo)
   - `project.env`                     App definition (repo, branch, compose file, optional env file)
   - `compose.server.yml`              Server override (joins `web`, adds Traefik labels)
-- `/opt/multi-deploy/bin/`            Scripts: `app.sh`, `deploy.sh`, `watch-and-deploy.sh`
+- `/opt/multi-deploy/bin/`            Scripts: `app`, `deploy.sh`, `watch-and-deploy.sh`
 - `/opt/multi-deploy/etc/systemd/`    Unit and timer templates
 
 ## Requirements
@@ -127,12 +127,12 @@ Git access
 - Check Traefik: `docker ps`, `docker logs traefik`
 - Check a timer: `systemctl status multi-deploy@<name>.timer`
 - Check a run: `journalctl -u multi-deploy@<name>.service -n 200 -f`
-- Manual deploy: `app.sh enable <name>` triggers on the next minute or run service manually
+- Manual deploy: `app enable <name>` triggers on the next minute or run service manually
 
 ## Uninstall / Cleanup
 
-- Disable timers: `app.sh disable <name>` for each app
-- Remove apps: `app.sh remove <name>`
+- Disable timers: `app disable <name>` for each app
+- Remove apps: `app remove <name>`
 - Stop Traefik: `cd /opt/multi-deploy/traefik && docker compose down`
 - Remove directory: `rm -rf /opt/multi-deploy` (be careful)
 

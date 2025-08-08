@@ -144,10 +144,10 @@ chmod 644 /etc/profile.d/multi-deploy-path.sh
 # --- Final hints ---
 echo "Setup complete. Next steps:"
 echo "  1) Re-login or run: source /etc/profile.d/multi-deploy-path.sh"
-echo "  2) Create an app:   app.sh create"
+echo "  2) Create an app:   app create"
 echo "  3) Configure it in: $INSTALL_DIR/projects/<name>/code"
-echo "  4) Enable deploys:  app.sh enable <name>"
-echo "  5) Remove app:      app.sh remove <name>"
+echo "  4) Enable deploys:  app enable <name>"
+echo "  5) Remove app:      app remove <name>"
 # Remove example project if present
 if [[ -d "$INSTALL_DIR/projects/example" ]]; then
   rm -rf "$INSTALL_DIR/projects/example"
