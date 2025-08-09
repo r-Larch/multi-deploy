@@ -1,6 +1,4 @@
 # Global Traefik configuration for multi-app hosting
-api: 
-  dashboard: true
 
 providers:
   docker:

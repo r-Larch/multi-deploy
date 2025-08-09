@@ -1,3 +1,3 @@
 # user_name:BCrypt(password) pairs for Traefik dashboard access
-# May be generated using: $(htpasswd -nb user password)
-# example:$apr1$H6uskkkW$IgXLP6ewTrTerkTrqE8wj/
+# May be generated using: $(htpasswd -nb myusername MyPassw0rd123)
+# example_user:$apr1$H6uskkkW$IgXLP6ewTrTerkTrqE8wj/
