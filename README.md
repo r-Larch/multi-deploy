@@ -30,19 +30,19 @@ The installer will:
 1. Create the app definition
    - Run: `app create`
    - Answer prompts (name, repo SSH/HTTPS, branch)
-   - The repo will be cloned into `/opt/multi-deploy/projects/<name>/code`
-   - The script generates in `/opt/multi-deploy/projects/<name>/`:
+   - The repo will be cloned into `/opt/multi-deploy/apps/<name>/code`
+   - The script generates in `/opt/multi-deploy/apps/<name>/`:
      - `compose.yml` (stack file that includes `code/compose*.yml` and `compose.server.yml`)
      - `compose.server.yml` (minimal: joins `web` and sets `traefik.enable=true` for one service)
      - `project.env` with `COMPOSE_FILE=compose.yml`
 
 2. Configure the app repo if needed
-   - `cd /opt/multi-deploy/projects/<name>/code`
+   - `cd /opt/multi-deploy/apps/<name>/code`
    - Set env, secrets, run migrations, etc.
 
 3. Enable auto-deploy
    - Run: `app enable <name>`
-   - A systemd timer will poll every minute: fetch, build if changed, and `up -d --remove-orphans` against `/opt/multi-deploy/projects/<name>/compose.yml`
+   - A systemd timer will poll every minute: fetch, build if changed, and `up -d --remove-orphans` against `/opt/multi-deploy/apps/<name>/compose.yml`
 
 Disable anytime: `app disable <name>`
 Remove an app: `app remove <name>`
@@ -56,7 +56,7 @@ Remove an app: `app remove <name>`
 - `disable <name>`
   - Disable and stop the per-app systemd timer
 - `remove <name>`
-  - Disable timer and delete `/opt/multi-deploy/projects/<name>`
+  - Disable timer and delete `/opt/multi-deploy/apps/<name>`
 - `deploy <name>`
   - Force deploy now: `docker compose build --pull` then `up -d --remove-orphans`
 - `start <name>`
@@ -92,15 +92,15 @@ app list
 ## How it works
 
 - Traefik runs globally from `/opt/multi-deploy/traefik` on a shared Docker network named `web`
-- Each app stack is defined by a single compose file at `/opt/multi-deploy/projects/<name>/compose.yml`
+- Each app stack is defined by a single compose file at `/opt/multi-deploy/apps/<name>/compose.yml`
   - This file includes the app repo compose (e.g., `code/compose.yml`) and the local `compose.server.yml`
-- The systemd service `multi-deploy@<name>.service` reads `/opt/multi-deploy/projects/<name>/project.env` and calls `bin/watch-and-deploy.sh`
+- The systemd service `multi-deploy@<name>.service` reads `/opt/multi-deploy/apps/<name>/project.env` and calls `bin/watch-and-deploy.sh`
 - The timer `multi-deploy@<name>.timer` runs the service every minute
 
 ## Repository layout
 
 - `/opt/multi-deploy/traefik/`        Traefik compose and config (ACME email in `.env`)
-- `/opt/multi-deploy/projects/<name>/`
+- `/opt/multi-deploy/apps/<name>/`
   - `code/`                           App git worktree (your repo)
   - `project.env`                     App definition (repo, branch, COMPOSE_FILE, optional env file)
   - `compose.yml`                     Stack file that includes repo compose and server override

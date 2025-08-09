@@ -44,8 +44,9 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 
 # Always clone fresh copy to temp, then sync into INSTALL_DIR while preserving local state
 if git clone --depth 1 "$REPO_URL" "$TMP_DIR/repo"; then
-  # Preserve user state: projects/, Traefik env and cert store
+  # Preserve user state: apps/, legacy projects/, Traefik env and cert store
   rsync -a \
+    --exclude 'apps/' \
     --exclude 'projects/' \
     --exclude 'traefik/.env' \
     --exclude 'traefik/letsencrypt/' \
@@ -56,7 +57,7 @@ else
 fi
 
 # Ensure directories and executable bits
-mkdir -p "$INSTALL_DIR/projects"
+mkdir -p "$INSTALL_DIR/apps"
 chmod +x "$INSTALL_DIR"/bin/*.sh || true
 chmod 0644 "$INSTALL_DIR"/etc/systemd/*.service "$INSTALL_DIR"/etc/systemd/*.timer || true
 
@@ -145,11 +146,11 @@ chmod 644 /etc/profile.d/multi-deploy-path.sh
 echo "Setup complete. Next steps:"
 echo "  1) Re-login or run: source /etc/profile.d/multi-deploy-path.sh"
 echo "  2) Create an app:   app create"
-echo "  3) Configure it in: $INSTALL_DIR/projects/<name>/code"
+echo "  3) Configure it in: $INSTALL_DIR/apps/<name>/code"
 echo "  4) Enable deploys:  app enable <name>"
 echo "  5) Remove app:      app remove <name>"
 # Remove example project if present
-if [[ -d "$INSTALL_DIR/projects/example" ]]; then
-  rm -rf "$INSTALL_DIR/projects/example"
+if [[ -d "$INSTALL_DIR/apps/example" ]]; then
+  rm -rf "$INSTALL_DIR/apps/example"
   echo "Removed example project."
 fi

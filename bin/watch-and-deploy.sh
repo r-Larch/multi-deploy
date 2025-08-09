@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # watch-and-deploy.sh <repo_ssh_url> <project_name> <branch> <compose_file> [env_file]
-# Clones/updates the repo under ../projects/<project_name>/code and deploys with docker compose.
+# Clones/updates the repo under ../apps/<project_name>/code and deploys with docker compose.
 
 repo=${1:?repo ssh url required}
 name=${2:?project name required}
@@ -11,7 +11,7 @@ compose_file=${4:?compose file required}
 env_file=${5:-}
 
 root_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-proj_meta_dir="$root_dir/projects/$name"
+proj_meta_dir="$root_dir/apps/$name"
 proj_dir="$proj_meta_dir/code"
 
 mkdir -p "$proj_dir"

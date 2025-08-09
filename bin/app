@@ -14,7 +14,7 @@
 set -euo pipefail
 
 INSTALL_DIR=${INSTALL_DIR:-/opt/multi-deploy}
-PROJECTS_DIR="$INSTALL_DIR/projects"
+APPS_DIR="$INSTALL_DIR/apps"
 
 bold() { echo -e "\e[1m$*\e[0m"; }
 red() { echo -e "\e[31m$*\e[0m"; }
@@ -96,12 +96,12 @@ extract_traefik_labels() {
 }
 
 ensure_dirs() {
-  mkdir -p "$PROJECTS_DIR"
+  mkdir -p "$APPS_DIR"
 }
 
 load_project() {
   local name="$1"
-  PROJ_META_DIR="$PROJECTS_DIR/$name"
+  PROJ_META_DIR="$APPS_DIR/$name"
   PROJ_ENV="$PROJ_META_DIR/project.env"
   PROJ_REPO_DIR="$PROJ_META_DIR/code"
   if [[ ! -f "$PROJ_ENV" ]]; then red "Missing $PROJ_ENV"; exit 1; fi
@@ -143,10 +143,10 @@ cmd_create() {
   if [[ -z "$branch" ]]; then branch=main; fi
 
   # Paths per layout:
-  # - metadata and stack files in $INSTALL_DIR/projects/<name>
-  # - repo worktree in $INSTALL_DIR/projects/<name>/code
-  local meta_dir="$PROJECTS_DIR/$name"
-  local repo_dir="$PROJECTS_DIR/$name/code"
+  # - metadata and stack files in $INSTALL_DIR/apps/<name>
+  # - repo worktree in $INSTALL_DIR/apps/<name>/code
+  local meta_dir="$APPS_DIR/$name"
+  local repo_dir="$APPS_DIR/$name/code"
 
   # Create meta dir and repo dir
   if [[ -e "$meta_dir" ]]; then
@@ -312,7 +312,7 @@ cmd_disable() {
 
 cmd_remove() {
   local name=${1:-}
-  local proj_dir="$PROJECTS_DIR/$name"
+  local proj_dir="$APPS_DIR/$name"
   if [[ -z "$name" ]]; then red "Usage: $(basename "$0") remove <name>"; exit 1; fi
   if [[ ! -d "$proj_dir" ]]; then red "Project '$name' not found at $proj_dir"; exit 1; fi
   bold "Disabling timer for '$name'..."
@@ -324,8 +324,8 @@ cmd_remove() {
   bold "Removing project directory: $proj_dir"
   rm -rf "$proj_dir"
   # Remove example project if present
-  if [[ "$name" == "example" && -d "$PROJECTS_DIR/example" ]]; then
-    rm -rf "$PROJECTS_DIR/example"
+  if [[ "$name" == "example" && -d "$APPS_DIR/example" ]]; then
+    rm -rf "$APPS_DIR/example"
     echo "Example project removed."
   fi
   echo "Project '$name' removed."
@@ -394,7 +394,7 @@ cmd_list() {
   printf "%-24s %-12s %-18s\n" "NAME" "AUTO-DEPLOY" "CONTAINERS"
   printf "%-24s %-12s %-18s\n" "------------------------" "------------" "------------------"
   local d name envf auto out lines running total
-  for d in "$PROJECTS_DIR"/*; do
+  for d in "$APPS_DIR"/*; do
     [[ -d "$d" ]] || continue
     envf="$d/project.env"
     [[ -f "$envf" ]] || continue
