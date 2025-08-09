@@ -9,11 +9,11 @@ services:
       - "--configFile=/etc/traefik/traefik.yml"
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
+      - "--api=${TRAEFIK_DASHBOARD_ENABLE:-false}"
+      - "--api.basePath=${TRAEFIK_DASHBOARD_BASEPATH:-/traefik}"
     env_file:
       - .env
     environment:
-      - TRAEFIK_API=${TRAEFIK_DASHBOARD_ENABLE:-false}
-      - TRAEFIK_API_BASEPATH=${TRAEFIK_DASHBOARD_BASEPATH-/traefik}
       - TRAEFIK_CERTIFICATESRESOLVERS_LETSENCRYPT_ACME_EMAIL=${TRAEFIK_ACME_EMAIL}
     ports:
       - "80:80"
@@ -26,7 +26,7 @@ services:
       - ./dashboard_users:/etc/traefik/dashboard_users:ro
     labels:
       - "traefik.enable=${TRAEFIK_DASHBOARD_ENABLE:-false}"
-      - "traefik.http.routers.dashboard.rule=Host(`${TRAEFIK_DASHBOARD_HOST:-traefik.example.com}`) && PathPrefix(`/traefik`)"
+      - "traefik.http.routers.dashboard.rule=Host(`${TRAEFIK_DASHBOARD_HOST:-traefik.example.com}`) && PathPrefix(`${TRAEFIK_DASHBOARD_BASEPATH:-/traefik}`)"
       - "traefik.http.routers.dashboard.entrypoints=websecure"
       - "traefik.http.routers.dashboard.tls.certresolver=letsencrypt"
       - "traefik.http.routers.dashboard.service=api@internal"
