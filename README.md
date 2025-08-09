@@ -150,10 +150,38 @@ Git access
 
 ## TODO
 
-[ ] app detail - should show compiled config with `docker compose config <service>`.
-[ ] app create [name] - allow name as optional prameter
-[ ] app create - git url optional
+Major refactor with new features.
+Maybe create some utilities for code sharing like `app-compose` for:
+
+app-compose <name> ...args
+```sh
+  load_app "$name"
+  ensure_repo
+  build_compose_cmd
+  "${compose_cmd[@]}" ...args
+```
+
+app-git: to perform git actions.
+app-deploy: to perform deploy actions.
+
+[ ] app detail - should show:
+    - App directory
+    - Type (git|static) Timers: on/off (only for git)
+    - git status (branch|commit|behind/up-do-date)
+    - compiled config using `docker compose config <service>`.
+[ ] app create [name] - allow name as optional parameter
+[ ] app create - git url optional -> App Type static
     apps without git don't have timers/auto-deploy
-    only a app.env + minimal compose.yml gets created
-[ ] app create - show id_ed25519.pub for deploy key setup in repo
+    only a app.env + minimal compose.yml gets created (no include:...)
+[ ] app create - show id_ed25519.pub for deploy key setup in repo (use colors)
 [ ] write logs for auto deploy - keep last 7 days of logs - include build logs
+[ ] rename app commands:
+    - stop -> down
+    - start -> up
+    - remove -> delete
+    - enable/disable -> timers <name> [on/off] -> shows/get status and set status.
+[ ] new commands:
+    - pull -> runs only git fetch/pull logic (resets to origin/branch)
+    - shell -> open shell to a container
+    - run <name> ...args -> uses `app-compose` runs: `docker compose <app_cmd> ...args`
+
