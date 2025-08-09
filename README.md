@@ -45,7 +45,7 @@ The installer will:
    - A systemd timer will poll every minute: fetch, build if changed, and `up -d --remove-orphans` against `/opt/multi-deploy/apps/<name>/compose.yml`
 
 Disable anytime: `app disable <name>`
-Remove an app: `app remove <name>`
+Remove an app: `app delete <name>`
 
 ## CLI reference (app)
 
@@ -55,20 +55,31 @@ Remove an app: `app remove <name>`
   - Enable and start the per-app systemd timer
 - `disable <name>`
   - Disable and stop the per-app systemd timer
-- `remove <name>`
+- `delete <name>`
   - Disable timer and delete `/opt/multi-deploy/apps/<name>`
+- `timers <name> [on|off]`
+  - Get/set the systemd timer state (git-backed apps only)
 - `deploy <name>`
   - Force deploy now: `docker compose build --pull` then `up -d --remove-orphans`
-- `start <name>`
+- `up <name>`
   - Start services: `docker compose up -d`
-- `stop <name>`
+- `down <name>`
   - Stop services: `docker compose down`
 - `restart <name>`
   - Restart services: `docker compose restart` (falls back to `up -d --force-recreate`)
 - `logs <name> [service]`
   - Stream logs with `docker compose logs -f --tail=200`
+- `pull <name>`
+  - Git fetch + reset to origin/BRANCH-NAME
+- `shell <name> <service>`
+  - Open a shell inside a running container
+- `run <name> ...args`
+  - Run raw docker compose subcommands with app context
 - `list`
   - List all apps with auto-deploy status and container status (e.g., `running 2/3` or `stopped`)
+- `detail <name>`
+  - Show app path, type, timer state, list of services, and a summary of `docker compose config`.
+  - If `service` is provided, prints only that service’s rendered config.
 
 Examples:
 
@@ -80,12 +91,17 @@ app disable myapp
 # Operate the stack
 app update myapp          # git pull and deploy
 app deploy myapp
-app start myapp
-app stop myapp
+app up myapp
+app down myapp
 app restart myapp
-app detail myapp          # prints app.env and main composer.yml (exec `docker compose config app` in app_meta_dir)
+app detail myapp          # prints summary from `docker compose config`
 app logs myapp            # all services
 app logs myapp api        # one service
+
+# Git helpers
+app pull myapp
+app shell myapp api
+app run myapp ps
 
 # Overview
 app list
@@ -107,7 +123,7 @@ app list
   - `app.env`                         App definition (repo, branch, COMPOSE_FILE, optional env file)
   - `compose.yml`                     Stack file that includes repo compose and server override
   - `compose.server.yml`              Server override (joins `web`, adds `traefik.enable=true`)
-- `/opt/multi-deploy/bin/`            Scripts: `app`, `deploy.sh`, `watch-and-deploy.sh`
+- `/opt/multi-deploy/bin/`            Scripts: `app`, `app-compose`, `app-git`, `app-deploy`, `deploy.sh`, `watch-and-deploy.sh`
 - `/opt/multi-deploy/etc/systemd/`    Unit and timer templates
 
 ## Requirements
@@ -133,12 +149,13 @@ Git access
 - Check Traefik: `docker ps`, `docker logs traefik`
 - Check a timer: `systemctl status multi-deploy@<name>.timer`
 - Check a run: `journalctl -u multi-deploy@<name>.service -n 200 -f`
+- Auto-deploy logs: per-app logs in `/opt/multi-deploy/apps/<name>/logs/` (kept 7 days)
 - Manual deploy: `app enable <name>` triggers on the next minute or run service manually
 
 ## Uninstall / Cleanup
 
 - Disable timers: `app disable <name>` for each app
-- Remove apps: `app remove <name>`
+- Remove apps: `app delete <name>`
 - Stop Traefik: `cd /opt/multi-deploy/traefik && docker compose down`
 - Remove directory: `rm -rf /opt/multi-deploy` (be careful)
 
@@ -150,38 +167,12 @@ Git access
 
 ## TODO
 
-Major refactor with new features.
-Maybe create some utilities for code sharing like `app-compose` for:
-
-app-compose <name> ...args
-```sh
-  load_app "$name"
-  ensure_repo
-  build_compose_cmd
-  "${compose_cmd[@]}" ...args
-```
-
-app-git: to perform git actions.
-app-deploy: to perform deploy actions.
-
-[ ] app detail - should show:
-    - App directory
-    - Type (git|static) Timers: on/off (only for git)
-    - git status (branch|commit|behind/up-do-date)
-    - compiled config using `docker compose config <service>`.
-[ ] app create [name] - allow name as optional parameter
-[ ] app create - git url optional -> App Type static
-    apps without git don't have timers/auto-deploy
-    only a app.env + minimal compose.yml gets created (no include:...)
-[ ] app create - show id_ed25519.pub for deploy key setup in repo (use colors)
-[ ] write logs for auto deploy - keep last 7 days of logs - include build logs
-[ ] rename app commands:
-    - stop -> down
-    - start -> up
-    - remove -> delete
-    - enable/disable -> timers <name> [on/off] -> shows/get status and set status.
-[ ] new commands:
-    - pull -> runs only git fetch/pull logic (resets to origin/branch)
-    - shell -> open shell to a container
-    - run <name> ...args -> uses `app-compose` runs: `docker compose <app_cmd> ...args`
+- Shared helper library for scripts (lib-app) [done]
+- app detail: include per-service `docker compose config <service>` and richer git status (ahead/behind) [done]
+- app create: allow optional name, static apps without timers [done]
+- app create: show id_ed25519.pub for deploy key setup (colorized) [todo]
+- Auto-deploy logs with rotation (keep last 7 days, include build logs) [done]
+- Rename commands: stop->down, start->up, remove->delete [done]
+- Add `timers <name> [on|off]` command as a front-end for enable/disable [done]
+- New commands: pull, shell, run [done]
 

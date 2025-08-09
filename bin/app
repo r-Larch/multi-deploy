@@ -1,52 +1,29 @@
 #!/usr/bin/env bash
 # Multi-deploy app manager
 # Usage:
-#   app create            # interactive app setup
-#   app enable <name>     # enable & start systemd timer
-#   app disable <name>    # disable & stop systemd timer
-#   app remove <name>     # disable timer and delete app
-#   app update <name>     # git fetch/pull if changed, then up (no forced rebuild)
-#   app deploy <name>     # build & up (force deploy)
-#   app start <name>      # compose up -d
-#   app stop <name>       # compose down
-#   app restart <name>    # compose restart
-#   app logs <name> [svc] # compose logs
-#   app list              # list apps and status
+#   app create [name]      # interactive app setup (name optional)
+#   app enable <name>      # enable & start systemd timer
+#   app disable <name>     # disable & stop systemd timer
+#   app delete <name>      # disable timer and delete app
+#   app update <name>      # git fetch/pull if changed, then up (no forced rebuild)
+#   app deploy <name>      # build & up (force deploy)
+#   app up <name>          # compose up -d
+#   app down <name>        # compose down
+#   app restart <name>     # compose restart
+#   app logs <name> [svc]  # compose logs
+#   app list               # list apps and status
+#   app detail <name>      # show detailed app info
+#   app pull <name>        # only git fetch/reset to origin/<branch>
+#   app shell <name> <svc> # open shell in running container
+#   app run <name> ...args # run raw docker compose args
 set -euo pipefail
 
 INSTALL_DIR=${INSTALL_DIR:-/opt/multi-deploy}
 APPS_DIR="$INSTALL_DIR/apps"
 
-bold() { echo -e "\e[1m$*\e[0m"; }
-red() { echo -e "\e[31m$*\e[0m"; }
-
-default_read() {
-  local prompt="$1"; shift || true
-  local default_value="${1:-}"; shift || true
-  local var
-  if [[ -n "$default_value" ]]; then
-    read -r -p "$prompt [$default_value]: " var || true
-    echo "${var:-$default_value}"
-  else
-    read -r -p "$prompt: " var || true
-    echo "$var"
-  fi
-}
-
-require_bin() {
-  command -v "$1" >/dev/null 2>&1 || { red "Missing dependency: $1"; exit 1; }
-}
-
-confirm() {
-  local prompt="${1:-Proceed?}"; shift || true
-  read -r -p "$prompt [y/N]: " ans || true
-  [[ "${ans,,}" == y || "${ans,,}" == yes ]]
-}
-
-slugify() {
-  # Keep lowercase letters, digits and dashes
-  echo "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9-]+/-/g; s/^-+//; s/-+$//'
-}
+# Require shared library
+# shellcheck disable=SC1091
+source "$INSTALL_DIR/bin/lib-app" || { echo "Missing $INSTALL_DIR/bin/lib-app" >&2; exit 1; }
 
 find_compose_file() {
   # Look for common compose filenames in repo root
@@ -133,94 +110,82 @@ cmd_create() {
   bold "New app setup"
 
   local name repo branch
-  name=$(default_read "App name (slug)" "")
-  name=$(slugify "$name")
+  if [[ -n "${1:-}" ]]; then
+    name=$(slugify "$1"); shift || true
+  else
+    name=$(default_read "App name (slug)" "")
+    name=$(slugify "$name")
+  fi
   if [[ -z "$name" ]]; then red "App name required"; exit 1; fi
 
-  repo=$(default_read "Git repo URL (SSH)" "git@github.com:org/repo.git")
-  if [[ -z "$repo" ]]; then red "Repo URL required"; exit 1; fi
+  repo=$(default_read "Git repo URL (SSH, leave empty for static app)" "")
+  branch=""
+  if [[ -n "$repo" ]]; then
+    branch=$(default_read "Git branch" "main")
+    [[ -z "$branch" ]] && branch=main
+  fi
 
-  branch=$(default_read "Git branch" "main")
-  if [[ -z "$branch" ]]; then branch=main; fi
-
-  # Paths per layout:
-  # - metadata and stack files in $INSTALL_DIR/apps/<name>
-  # - repo worktree in $INSTALL_DIR/apps/<name>/code
   local meta_dir="$APPS_DIR/$name"
   local repo_dir="$APPS_DIR/$name/code"
-
-  # Create meta dir and repo dir
-  if [[ -e "$meta_dir" ]]; then
-    echo "Directory $meta_dir already exists."
-    if ! confirm "Continue and reuse it?"; then exit 1; fi
-  fi
   mkdir -p "$meta_dir"
 
-  if [[ -d "$repo_dir/.git" ]]; then
-    echo "Repo already present at $repo_dir. Fetching updates..."
-    (cd "$repo_dir" && git fetch --all --prune)
-  else
-    echo "Cloning $repo into $repo_dir ..."
-    mkdir -p "$repo_dir"
-    git clone "$repo" "$repo_dir"
-  fi
-
-  # Robust checkout of branch
-  (
-    cd "$repo_dir"
-    git fetch --all --prune
-    if git show-ref --verify --quiet "refs/heads/$branch"; then
-      git checkout "$branch"
-      git pull --ff-only || true
-    elif git show-ref --verify --quiet "refs/remotes/origin/$branch"; then
-      git checkout -B "$branch" --track "origin/$branch"
-      git pull --ff-only || true
-    else
-      red "Branch '$branch' not found on origin. Staying on current branch." || true
-    fi
-  )
-
-  # Detect a compose file in repo root (optional; for selecting service)
   local compose_file_repo=""
-  if compose_file_repo=$(find_compose_file "$repo_dir"); then
-    echo "Detected compose file in repo: $compose_file_repo"
-  else
-    echo "No compose file found in repo root. You can add one under code/."
-  fi
-
-  # List services for selection (if compose found)
   local svc=""
-  if [[ -n "$compose_file_repo" ]]; then
-    echo
-    echo "Detecting services in $compose_file_repo ..."
-    mapfile -t services < <(list_services_from_compose "$repo_dir/$compose_file_repo")
-    if (( ${#services[@]} > 0 )); then
-      echo "Found services: ${services[*]}"
+  if [[ -n "$repo" ]]; then
+    if [[ -d "$repo_dir/.git" ]]; then
+      echo "Repo already present at $repo_dir. Fetching updates..."
+      (cd "$repo_dir" && git fetch --all --prune)
+    else
+      echo "Cloning $repo into $repo_dir ..."
+      mkdir -p "$repo_dir"
+      git clone "$repo" "$repo_dir"
+    fi
+    (
+      cd "$repo_dir"
+      git fetch --all --prune
+      if git show-ref --verify --quiet "refs/heads/$branch"; then
+        git checkout "$branch"
+        git pull --ff-only || true
+      elif git show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+        git checkout -B "$branch" --track "origin/$branch"
+        git pull --ff-only || true
+      else
+        red "Branch '$branch' not found on origin. Staying on current branch." || true
+      fi
+    )
+    if compose_file_repo=$(find_compose_file "$repo_dir"); then
+      echo "Detected compose file in repo: $compose_file_repo"
       echo
-      echo "Select the service to attach to Traefik (network+enable only):"
-      local i=1
-      for s in "${services[@]}"; do echo "  [$i] $s"; ((i++)); done
-      while true; do
-        read -r -p "Service number: " idx || true
-        if [[ "$idx" =~ ^[0-9]+$ ]] && (( idx>=1 && idx<=${#services[@]} )); then
-          svc="${services[idx-1]}"; break
-        fi
-        echo "Invalid selection"
-      done
+      echo "Detecting services in $compose_file_repo ..."
+      mapfile -t services < <(list_services_from_compose "$repo_dir/$compose_file_repo")
+      if (( ${#services[@]} > 0 )); then
+        echo "Found services: ${services[*]}"
+        echo
+        echo "Select the service to attach to Traefik (network+enable only):"
+        local i=1
+        for s in "${services[@]}"; do echo "  [$i] $s"; ((i++)); done
+        while true; do
+          read -r -p "Service number: " idx || true
+          if [[ "$idx" =~ ^[0-9]+$ ]] && (( idx>=1 && idx<=${#services[@]} )); then
+            svc="${services[idx-1]}"; break
+          fi
+          echo "Invalid selection"
+        done
+      fi
     fi
   fi
 
-  # Write app.env into meta dir
+  # app.env
   local env_path="$meta_dir/app.env"
-  cat >"$env_path" <<EOF
-# Auto-generated by app create
-NAME=$name
-REPO=$repo
-BRANCH=$branch
-COMPOSE_FILE=compose.yml
-EOF
+  {
+    echo "# Auto-generated by app create"
+    echo "NAME=$name"
+    [[ -n "$repo" ]] && echo "REPO=$repo"
+    [[ -n "$branch" ]] && echo "BRANCH=$branch"
+    echo "COMPOSE_FILE=compose.yml"
+  } > "$env_path"
 
-  # Write compose.yml in meta dir with include of repo compose and server override
+  # compose.yml
   local stack_compose="$meta_dir/compose.yml"
   if [[ -n "$compose_file_repo" ]]; then
     cat >"$stack_compose" <<EOF
@@ -230,14 +195,15 @@ include:
       - compose.server.yml
 EOF
   else
-    cat >"$stack_compose" <<EOF
+    # static app (no git): only server override placeholder
+    cat >"$stack_compose" <<'EOF'
 include:
   - path:
       - compose.server.yml
 EOF
   fi
 
-  # Write minimal compose.server.yml override
+  # compose.server.yml
   local override_path="$meta_dir/compose.server.yml"
   if [[ -n "$svc" ]]; then
     cat >"$override_path" <<EOF
@@ -254,7 +220,6 @@ networks:
     name: web
 EOF
   else
-    # If no service known yet, create a template and leave TODO
     cat >"$override_path" <<'EOF'
 # Select a service name from your repo's compose and uncomment below
 # services:
@@ -273,204 +238,196 @@ EOF
 
   echo
   bold "Review"
-  echo "App meta dir:  $meta_dir"
+  echo "App dir:           $meta_dir"
   echo "Repo worktree:     $repo_dir"
-  echo "Repo URL:          $repo"
-  echo "Branch:            $branch"
+  echo "Repo URL:          ${repo:-"(static app)"}"
+  [[ -n "$branch" ]] && echo "Branch:            $branch"
   echo "Stack compose:     $stack_compose"
   echo "override compose:  $override_path"
 
   echo
   bold "Next steps"
-  echo "- cd $repo_dir"
-  echo "- Configure your app if required (env, secrets, migrations, etc.)"
-  echo "- Then enable deployments: $(basename "$0") enable $name"
+  if [[ -n "$repo" ]]; then
+    echo "- cd $repo_dir"
+    echo "- Configure your app if required (env, secrets, migrations, etc.)"
+    echo "- Then enable deployments: $(basename "$0") enable $name"
+  else
+    echo "- Edit $override_path and add your service under services:"
+  fi
 
   bold "Done. App '$name' created."
 }
 
 cmd_enable() {
-  local name=${1:-}
-  if [[ -z "$name" ]]; then red "Usage: $(basename "$0") enable <name>"; exit 1; fi
-  if [[ ${EUID:-$UID} -ne 0 ]]; then
-    sudo systemctl enable --now "multi-deploy@${name}.timer"
-  else
-    systemctl enable --now "multi-deploy@${name}.timer"
-  fi
-  echo "Enabled timer for '$name'"
+  local name=${1:-}; [[ -n "$name" ]] || { red "Usage: $(basename "$0") enable <name>"; exit 1; }
+  load_app "$name"
+  if [[ -z "${REPO:-}" ]]; then red "Static apps do not support timers"; exit 1; fi
+  systemctl daemon-reload || true
+  systemctl enable --now "multi-deploy@${NAME}.timer"
+  echo "Timer enabled for $NAME"
 }
 
 cmd_disable() {
-  local name=${1:-}
-  if [[ -z "$name" ]]; then red "Usage: $(basename "$0") disable <name>"; exit 1; fi
-  if [[ ${EUID:-$UID} -ne 0 ]]; then
-    sudo systemctl disable --now "multi-deploy@${name}.timer"
-  else
-    systemctl disable --now "multi-deploy@${name}.timer"
+  local name=${1:-}; [[ -n "$name" ]] || { red "Usage: $(basename "$0") disable <name>"; exit 1; }
+  load_app "$name"
+  if systemctl is-enabled "multi-deploy@${NAME}.timer" >/dev/null 2>&1; then
+    systemctl disable --now "multi-deploy@${NAME}.timer" || true
   fi
-  echo "Disabled timer for '$name'"
+  echo "Timer disabled for $NAME"
 }
 
+cmd_delete() { cmd_remove "$@"; }
 cmd_remove() {
-  local name=${1:-}
-  local app_dir="$APPS_DIR/$name"
-  if [[ -z "$name" ]]; then red "Usage: $(basename "$0") remove <name>"; exit 1; fi
-  if [[ ! -d "$app_dir" ]]; then red "App '$name' not found at $app_dir"; exit 1; fi
-  bold "Disabling timer for '$name'..."
-  if [[ ${EUID:-$UID} -ne 0 ]]; then
-    sudo systemctl disable --now "multi-deploy@${name}.timer"
+  local name=${1:-}; [[ -n "$name" ]] || { red "Usage: $(basename "$0") delete <name>"; exit 1; }
+  local dir="$APPS_DIR/$name"
+  if [[ ! -d "$dir" ]]; then red "App not found: $name"; exit 1; fi
+  if confirm "Delete app '$name' at $dir? This cannot be undone."; then
+    if systemctl is-enabled "multi-deploy@${name}.timer" >/dev/null 2>&1; then
+      systemctl disable --now "multi-deploy@${name}.timer" || true
+    fi
+    rm -rf "$dir"
+    echo "Deleted $name"
   else
-    systemctl disable --now "multi-deploy@${name}.timer"
-  fi
-  bold "Removing app directory: $app_dir"
-  rm -rf "$app_dir"
-  # Remove example app if present
-  if [[ "$name" == "example" && -d "$APPS_DIR/example" ]]; then
-    rm -rf "$APPS_DIR/example"
-    echo "Example app removed."
-  fi
-  echo "App '$name' removed."
-}
-
-cmd_deploy() {
-  local name=${1:-}
-  if [[ -z "$name" ]]; then red "Usage: $(basename "$0") deploy <name>"; exit 1; fi
-  load_app "$name"
-  ensure_repo
-  build_compose_cmd
-  echo "Building images..."
-  "${compose_cmd[@]}" build --pull
-  echo "Applying stack..."
-  "${compose_cmd[@]}" up -d --remove-orphans
-  echo "Deployed '$name'"
-}
-
-cmd_update() {
-  local name=${1:-}
-  if [[ -z "$name" ]]; then red "Usage: $(basename "$0") update <name>"; exit 1; fi
-  load_app "$name"
-  ensure_repo
-  # Use watcher path that calls deploy.sh with change detection (no forced build)
-  "$INSTALL_DIR/bin/watch-and-deploy.sh" "$REPO" "$NAME" "$BRANCH" "$COMPOSE_FILE"
-}
-
-cmd_detail() {
-  local name=${1:-}
-  if [[ -z "$name" ]]; then red "Usage: $(basename "$0") detail <name>"; exit 1; fi
-  load_app "$name"
-  echo "File: $APP_ENV"
-  echo "----"
-  sed 's/^/    /' "$APP_ENV" || true
-  echo
-  echo "File: $APP_COMPOSE_FILE"
-  echo "----"
-  if [[ -f "$APP_COMPOSE_FILE" ]]; then
-    sed 's/^/    /' "$APP_COMPOSE_FILE"
-  else
-    echo "    (missing)"
+    echo "Aborted"
   fi
 }
 
-cmd_start() {
-  local name=${1:-}
-  if [[ -z "$name" ]]; then red "Usage: $(basename "$0") start <name>"; exit 1; fi
-  load_app "$name"
-  ensure_repo
-  build_compose_cmd
-  "${compose_cmd[@]}" up -d
-  echo "Started '$name'"
-}
-
-cmd_stop() {
-  local name=${1:-}
-  if [[ -z "$name" ]]; then red "Usage: $(basename "$0") stop <name>"; exit 1; fi
-  load_app "$name"
-  ensure_repo
-  build_compose_cmd
-  "${compose_cmd[@]}" down
-  echo "Stopped '$name'"
-}
+cmd_update() { local n=${1:-}; [[ -n "$n" ]] || { red "Usage: $(basename "$0") update <name>"; exit 1; }; "$INSTALL_DIR/bin/app-deploy" "$n" update; }
+cmd_deploy() { local n=${1:-}; [[ -n "$n" ]] || { red "Usage: $(basename "$0") deploy <name>"; exit 1; }; "$INSTALL_DIR/bin/app-deploy" "$n" deploy; }
+cmd_up() { local n=${1:-}; [[ -z "$n" ]] && { red "Usage: $(basename "$0") up <name>"; exit 1; }; "$INSTALL_DIR/bin/app-compose" "$n" up -d; }
+cmd_down() { local n=${1:-}; [[ -z "$n" ]] && { red "Usage: $(basename "$0") down <name>"; exit 1; }; "$INSTALL_DIR/bin/app-compose" "$n" down; }
+cmd_pull() { local n=${1:-}; [[ -z "$n" ]] && { red "Usage: $(basename "$0") pull <name>"; exit 1; }; "$INSTALL_DIR/bin/app-git" "$n" pull; }
+cmd_run() { local n=${1:-}; shift || true; [[ -z "$n" ]] && { red "Usage: $(basename "$0") run <name> <compose-args...>"; exit 1; }; "$INSTALL_DIR/bin/app-compose" "$n" "$@"; }
+cmd_shell() { local n=${1:-}; local svc=${2:-}; [[ -z "$n" || -z "$svc" ]] && { red "Usage: $(basename "$0") shell <name> <service>"; exit 1; }; "$INSTALL_DIR/bin/app-compose" "$n" exec -it "$svc" sh; }
 
 cmd_restart() {
-  local name=${1:-}
-  if [[ -z "$name" ]]; then red "Usage: $(basename "$0") restart <name>"; exit 1; fi
-  load_app "$name"
-  ensure_repo
-  build_compose_cmd
-  # Prefer compose restart for speed
-  "${compose_cmd[@]}" restart || { "${compose_cmd[@]}" up -d --force-recreate; }
-  echo "Restarted '$name'"
+  local n=${1:-}; [[ -n "$n" ]] || { red "Usage: $(basename "$0") restart <name>"; exit 1; }
+  if "$INSTALL_DIR/bin/app-compose" "$n" restart; then
+    exit 0
+  else
+    echo "Restart failed; trying up --force-recreate"
+    "$INSTALL_DIR/bin/app-compose" "$n" up -d --force-recreate
+  fi
 }
 
 cmd_logs() {
-  local name=${1:-}
-  local svc=${2:-}
-  if [[ -z "$name" ]]; then red "Usage: $(basename "$0") logs <name> [service]"; exit 1; fi
-  load_app "$name"
-  ensure_repo
-  build_compose_cmd
-  if [[ -n "$svc" ]]; then
-    "${compose_cmd[@]}" logs -f --tail=200 "$svc"
+  local n=${1:-}; shift || true
+  [[ -n "$n" ]] || { red "Usage: $(basename "$0") logs <name> [service]"; exit 1; }
+  if [[ -n "${1:-}" ]]; then
+    "$INSTALL_DIR/bin/app-compose" "$n" logs -f --tail=200 "$1"
   else
-    "${compose_cmd[@]}" logs -f --tail=200
+    "$INSTALL_DIR/bin/app-compose" "$n" logs -f --tail=200
   fi
 }
 
 cmd_list() {
   ensure_dirs
-  printf "%-24s %-12s %-18s\n" "NAME" "AUTO-DEPLOY" "CONTAINERS"
-  printf "%-24s %-12s %-18s\n" "------------------------" "------------" "------------------"
-  local d name envf auto out lines running total
+  printf "%-20s %-8s %-14s\n" "NAME" "TIMER" "STATUS"
+  printf "%-20s %-8s %-14s\n" "----" "-----" "------"
   for d in "$APPS_DIR"/*; do
     [[ -d "$d" ]] || continue
-    envf="$d/app.env"
-    [[ -f "$envf" ]] || continue
-    name="$(basename "$d")"
-    # Auto-deploy (timer) status
-    if systemctl --quiet is-enabled "multi-deploy@${name}.timer" 2>/dev/null; then
-      auto="enabled"
-    else
-      auto="disabled"
+    local name=$(basename "$d")
+    if [[ ! -f "$d/app.env" ]]; then continue; fi
+    # Load minimal context silently
+    NAME="$name"; APP_META_DIR="$d"; APP_ENV="$d/app.env"; source "$APP_ENV" || true
+    # Build compose status without noisy warnings
+    local timer="n/a"
+    if [[ -n "${REPO:-}" ]]; then
+      if systemctl --quiet is-enabled "multi-deploy@${name}.timer" 2>/dev/null; then timer="on"; else timer="off"; fi
     fi
-    # Container status
-    # shellcheck disable=SC1090
-    source "$envf" || true
-    APP_META_DIR="$d"
-    APP_REPO_DIR="$d/code"
-    APP_COMPOSE_FILE="$APP_META_DIR/${COMPOSE_FILE:-compose.yml}"
-    build_compose_cmd || true
-    out=$({ "${compose_cmd[@]}" ps 2>/dev/null || true; } | sed '/^$/d')
-    if [[ -z "$out" || ! -f "$APP_COMPOSE_FILE" ]]; then
-      printf "%-24s %-12s %-18s\n" "$name" "$auto" "stopped"
-      continue
-    fi
-    # Count containers excluding header row
-    lines=$(echo "$out" | awk 'NR>1 {print}' | wc -l | tr -d ' ')
-    if [[ "$lines" == "0" ]]; then
-      printf "%-24s %-12s %-18s\n" "$name" "$auto" "stopped"
-      continue
-    fi
-    running=$(echo "$out" | grep -i "running" | wc -l | tr -d ' ')
-    total="$lines"
-    printf "%-24s %-12s %-18s\n" "$name" "$auto" "running ${running}/${total}"
+    local status
+    APP_COMPOSE_FILE="$d/${COMPOSE_FILE:-compose.yml}"
+    compose_cmd=(docker compose -f "$APP_COMPOSE_FILE")
+    status="$(
+      total=$(${compose_cmd[@]} ps --services 2>/dev/null | wc -l | tr -d '[:space:]' || echo 0);
+      running=$(${compose_cmd[@]} ps --status running --services 2>/dev/null | wc -l | tr -d '[:space:]' || echo 0);
+      if [[ ${total:-0} -eq 0 ]]; then echo none; elif [[ ${running:-0} -eq 0 ]]; then echo stopped; else echo "running ${running}/${total}"; fi
+    )"
+    printf "%-20s %-8s %-14s\n" "$name" "$timer" "$status"
   done
+}
+
+cmd_timers() {
+  local name=${1:-}; local action=${2:-}
+  [[ -n "$name" ]] || { red "Usage: $(basename "$0") timers <name> [on|off]"; exit 1; }
+  load_app "$name"
+  if [[ -z "${REPO:-}" ]]; then
+    echo "Timers: n/a (static app)"
+    return 0
+  fi
+  if [[ -z "$action" ]]; then
+    if systemctl --quiet is-enabled "multi-deploy@${NAME}.timer" 2>/dev/null; then echo "Timers: on"; else echo "Timers: off"; fi
+    return 0
+  fi
+  case "$action" in
+    on)  systemctl daemon-reload || true; systemctl enable --now "multi-deploy@${NAME}.timer"; echo "Timers enabled" ;;
+    off) systemctl disable --now "multi-deploy@${NAME}.timer" || true; echo "Timers disabled" ;;
+    *) red "Usage: $(basename "$0") timers <name> [on|off]"; exit 1 ;;
+  esac
+}
+
+cmd_detail() {
+  local name=${1:-}
+  local svc=${2:-}
+  if [[ -z "$name" ]]; then red "Usage: $(basename "$0") detail <name> [service]"; exit 1; fi
+  load_app "$name"
+  local type="static"
+  if [[ -n "${REPO:-}" ]]; then type="git"; fi
+  local timers
+  if systemctl --quiet is-enabled "multi-deploy@${NAME}.timer" 2>/dev/null; then timers="on"; else timers="off"; fi
+  echo "App directory: $APP_META_DIR"
+  echo "Type: $type  Timers: $timers"
+  if [[ "$type" == git ]]; then
+    local branch head ahead behind
+    branch=$(git -C "$APP_REPO_DIR" rev-parse --abbrev-ref HEAD || true)
+    head=$(git -C "$APP_REPO_DIR" rev-parse --short HEAD || true)
+    git -C "$APP_REPO_DIR" fetch --all --prune >/dev/null 2>&1 || true
+    read ahead behind < <(git -C "$APP_REPO_DIR" rev-list --left-right --count "origin/${branch}...${branch}" 2>/dev/null | awk '{print $1, $2}')
+    echo "Git: branch=$branch commit=$head ahead=${ahead:-0} behind=${behind:-0}"
+  fi
+  echo
+  if [[ -z "$svc" ]]; then
+    echo "Services:"
+    "$INSTALL_DIR/bin/app-compose" "$name" config --services 2>/dev/null | sed 's/^/  - /'
+    echo
+    echo "docker compose config (summary)"
+    "$INSTALL_DIR/bin/app-compose" "$name" config 2>/dev/null | sed -n '1,80p' || true
+  else
+    echo "docker compose config for service '$svc'"
+    "$INSTALL_DIR/bin/app-compose" "$name" config 2>/dev/null | awk -v svc="$svc" '
+      $0 ~ /^services:/ {in_s=1; next}
+      in_s {
+        if ($0 ~ /^[^ ]/) exit
+        if ($0 ~ /^  [^ ]+:/) {
+          cur=$0; sub(/^  /,"",cur); sub(/:.*/,"",cur)
+          if (found && cur!=svc) exit
+          if (cur==svc) {found=1; print; next}
+        }
+        if (found) print
+      }
+    '
+  fi
 }
 
 usage() {
   cat <<USAGE
 Usage:
-  $(basename "$0") create            # interactive app setup
+  $(basename "$0") create [name]     # interactive app setup
   $(basename "$0") enable <name>     # enable & start systemd timer
   $(basename "$0") disable <name>    # disable & stop systemd timer
-  $(basename "$0") remove <name>     # disable timer and delete app
-  $(basename "$0") update <name>     # git fetch/pull if changed, then up (no forced rebuild)
+  $(basename "$0") delete <name>     # disable timer and delete app
+  $(basename "$0") timers <name> [on|off] # get/set timer state
+  $(basename "$0") update <name>     # git fetch/pull if changed, then up
   $(basename "$0") deploy <name>     # build & up (force deploy)
-  $(basename "$0") start <name>      # compose up -d
-  $(basename "$0") stop <name>       # compose down
+  $(basename "$0") up <name>         # compose up -d
+  $(basename "$0") down <name>       # compose down
   $(basename "$0") restart <name>    # compose restart
   $(basename "$0") logs <name> [svc] # compose logs
   $(basename "$0") list              # list apps and status
-  $(basename "$0") detail <name>     # print app.env and compose.yml
+  $(basename "$0") detail <name> [service] # show detailed app info
+  $(basename "$0") pull <name>       # only git fetch/reset to origin/<branch>
+  $(basename "$0") shell <name> <svc># open shell in running container
+  $(basename "$0") run <name> ...    # run raw docker compose args
 USAGE
 }
 
@@ -480,15 +437,19 @@ main() {
     create) shift || true; cmd_create "$@" ;;
     enable) shift || true; cmd_enable "$@" ;;
     disable) shift || true; cmd_disable "$@" ;;
-    remove) shift || true; cmd_remove "$@" ;;
+    remove|delete) shift || true; cmd_delete "$@" ;;
+    timers) shift || true; cmd_timers "$@" ;;
     update) shift || true; cmd_update "$@" ;;
     deploy) shift || true; cmd_deploy "$@" ;;
-    start)  shift || true; cmd_start "$@" ;;
-    stop)   shift || true; cmd_stop "$@" ;;
+    up)     shift || true; cmd_up "$@" ;;
+    down)   shift || true; cmd_down "$@" ;;
     restart)shift || true; cmd_restart "$@" ;;
     logs)   shift || true; cmd_logs "$@" ;;
     list)   shift || true; cmd_list "$@" ;;
     detail) shift || true; cmd_detail "$@" ;;
+    pull)   shift || true; cmd_pull "$@" ;;
+    shell)  shift || true; cmd_shell "$@" ;;
+    run)    shift || true; cmd_run "$@" ;;
     -h|--help|help|"") usage ;;
     *) red "Unknown command: $cmd"; echo; usage; exit 1 ;;
   esac

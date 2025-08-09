@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# app-git <name> <action>
+# Actions: status, pull, fetch, reset-hard
+
+INSTALL_DIR=${INSTALL_DIR:-/opt/multi-deploy}
+APPS_DIR="${INSTALL_DIR}/apps"
+
+# Require shared lib
+# shellcheck disable=SC1091
+source "$INSTALL_DIR/bin/lib-app" || { echo "Missing $INSTALL_DIR/bin/lib-app" >&2; exit 1; }
+
+name=${1:-}
+action=${2:-}
+if [[ -z "$name" || -z "$action" ]]; then echo "Usage: $(basename "$0") <name> <status|pull|fetch|reset-hard>" >&2; exit 1; fi
+
+load_app "$name"
+cd "$APP_REPO_DIR"
+
+case "$action" in
+  status)
+    current_branch=$(git rev-parse --abbrev-ref HEAD || true)
+    git fetch --all --prune >/dev/null 2>&1 || true
+    read ahead behind < <(git rev-list --left-right --count "origin/${current_branch}...${current_branch}" 2>/dev/null | awk '{print $1, $2}')
+    head=$(git rev-parse --short HEAD || true)
+    echo "branch=${current_branch} commit=${head} ahead=${ahead:-0} behind=${behind:-0}"
+    ;;
+  fetch)
+    git fetch --all --prune
+    ;;
+  pull)
+    git fetch --all --prune
+    current_branch=$(git rev-parse --abbrev-ref HEAD || true)
+    git reset --hard "origin/${current_branch}"
+    ;;
+  reset-hard)
+    current_branch=$(git rev-parse --abbrev-ref HEAD || true)
+    git reset --hard "origin/${current_branch}"
+    ;;
+  *) echo "Unknown action: $action" >&2; exit 1 ;;
+esac

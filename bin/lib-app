@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Shared helpers for multi-deploy scripts
+
+INSTALL_DIR=${INSTALL_DIR:-/opt/multi-deploy}
+APPS_DIR="${INSTALL_DIR}/apps"
+
+# --------------- UX helpers ---------------
+bold() { echo -e "\e[1m$*\e[0m"; }
+red() { echo -e "\e[31m$*\e[0m"; }
+
+default_read() {
+  local prompt="$1"; shift || true
+  local default_value="${1:-}"; shift || true
+  local var
+  if [[ -n "$default_value" ]]; then
+    read -r -p "$prompt [$default_value]: " var || true
+    echo "${var:-$default_value}"
+  else
+    read -r -p "$prompt: " var || true
+    echo "$var"
+  fi
+}
+
+require_bin() { command -v "$1" >/dev/null 2>&1 || { red "Missing dependency: $1"; exit 1; }; }
+
+confirm() {
+  local prompt="${1:-Proceed?}"; shift || true
+  read -r -p "$prompt [y/N]: " ans || true
+  [[ "${ans,,}" == y || "${ans,,}" == yes ]]
+}
+
+slugify() { echo "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9-]+/-/g; s/^-+//; s/-+$//'; }
+
+ensure_dirs() { mkdir -p "$APPS_DIR"; }
+
+# --------------- App context ---------------
+load_app() {
+  local name="$1"
+  NAME="$name"
+  APP_META_DIR="$APPS_DIR/$name"
+  APP_ENV="$APP_META_DIR/app.env"
+  APP_REPO_DIR="$APP_META_DIR/code"
+  if [[ ! -f "$APP_ENV" ]]; then red "Missing $APP_ENV"; exit 1; fi
+  # shellcheck disable=SC1090
+  source "$APP_ENV"
+  # Allow NAME to be set from env file; fallback to provided name
+  NAME="${NAME:-$name}"
+  if [[ -z "${COMPOSE_FILE:-}" ]]; then red "COMPOSE_FILE not set in $APP_ENV"; exit 1; fi
+  APP_COMPOSE_FILE="$APP_META_DIR/$COMPOSE_FILE"
+}
+
+build_compose_cmd() {
+  compose_cmd=(docker compose)
+  # Optional env-file for variable substitution
+  if [[ -n "${COMPOSE_ENV_FILE:-}" && -f "$COMPOSE_ENV_FILE" ]]; then
+    compose_cmd+=(--env-file "$COMPOSE_ENV_FILE")
+  fi
+  compose_cmd+=(-f "$APP_COMPOSE_FILE")
+}
+
+ensure_repo() {
+  # Only for git-backed apps
+  if [[ -n "${REPO:-}" && ! -d "$APP_REPO_DIR/.git" ]]; then
+    echo "Cloning repo for app '$NAME' into $APP_REPO_DIR ..."
+    "$INSTALL_DIR/bin/watch-and-deploy.sh" "$REPO" "$NAME" "${BRANCH:-main}" "$COMPOSE_FILE"
+  fi
+}
+
+# --------------- Status helpers ---------------
+
+# Prints timer status: on/off/n-a
+print_timer_status() {
+  if [[ -z "${REPO:-}" ]]; then
+    echo "n/a"
+    return 0
+  fi
+  if systemctl --quiet is-enabled "multi-deploy@${NAME}.timer" 2>/dev/null; then
+    echo "on"
+  else
+    echo "off"
+  fi
+}
+
+# Prints compose status: "running X/Y", "stopped", or "none"
+print_compose_status() {
+  build_compose_cmd
+  local total running
+  total=$("${compose_cmd[@]}" ps --services 2>/dev/null | wc -l | tr -d '[:space:]' || echo 0)
+  running=$("${compose_cmd[@]}" ps --status running --services 2>/dev/null | wc -l | tr -d '[:space:]' || echo 0)
+  if [[ "${total:-0}" -eq 0 ]]; then
+    echo "none"
+  elif [[ "${running:-0}" -eq 0 ]]; then
+    echo "stopped"
+  else
+    echo "running ${running}/${total}"
+  fi
+}

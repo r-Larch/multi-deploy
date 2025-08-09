@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# app-deploy <name> <action>
+# Actions: update (change-detect up), deploy (build --pull + up -d --remove-orphans)
+
+INSTALL_DIR=${INSTALL_DIR:-/opt/multi-deploy}
+APPS_DIR="${INSTALL_DIR}/apps"
+
+# Require shared lib
+# shellcheck disable=SC1091
+source "$INSTALL_DIR/bin/lib-app" || { echo "Missing $INSTALL_DIR/bin/lib-app" >&2; exit 1; }
+
+name=${1:-}
+action=${2:-}
+if [[ -z "$name" || -z "$action" ]]; then echo "Usage: $(basename "$0") <name> <update|deploy>" >&2; exit 1; fi
+
+load_app "$name"
+
+case "$action" in
+  update)
+    "$INSTALL_DIR/bin/watch-and-deploy.sh" "$REPO" "$NAME" "${BRANCH:-main}" "$COMPOSE_FILE"
+    ;;
+  deploy)
+    build_compose_cmd
+    "${compose_cmd[@]}" build --pull
+    "${compose_cmd[@]}" up -d --remove-orphans
+    ;;
+  *) echo "Unknown action: $action" >&2; exit 1 ;;
+esac

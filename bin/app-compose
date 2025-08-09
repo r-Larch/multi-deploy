@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# app-compose <name> ...args
+# Loads app context, ensures repo, builds compose command and executes `docker compose` with provided args.
+
+INSTALL_DIR=${INSTALL_DIR:-/opt/multi-deploy}
+APPS_DIR="${INSTALL_DIR}/apps"
+
+# Require shared lib
+# shellcheck disable=SC1091
+source "$INSTALL_DIR/bin/lib-app" || { echo "Missing $INSTALL_DIR/bin/lib-app" >&2; exit 1; }
+
+name=${1:-}
+if [[ -z "$name" ]]; then echo "Usage: $(basename "$0") <name> <compose-args...>" >&2; exit 1; fi
+shift
+
+load_app "$name"
+ensure_repo
+build_compose_cmd
+
+exec "${compose_cmd[@]}" "$@"
