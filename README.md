@@ -147,3 +147,13 @@ Git access
 - Can I use HTTPS clone URLs? Yes. For public repos, HTTPS is fine. For private, use SSH keys.
 - How often does it deploy? Every minute by default (see timer).
 - Can I prune images? Yes, manually run `docker system prune -f` when desired.
+
+## TODO
+
+[ ] app detail - should show compiled config with `docker compose config <service>`.
+[ ] app create [name] - allow name as optional prameter
+[ ] app create - git url optional
+    apps without git don't have timers/auto-deploy
+    only a app.env + minimal compose.yml gets created
+[ ] app create - show id_ed25519.pub for deploy key setup in repo
+[ ] write logs for auto deploy - keep last 7 days of logs - include build logs

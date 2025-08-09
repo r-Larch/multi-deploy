@@ -99,6 +99,11 @@ else
   fi
   cat >"$TRAEFIK_ENV_FILE" <<EOF
 TRAEFIK_ACME_EMAIL=$TRAEFIK_ACME_EMAIL
+
+# Traefik dashboard settings:
+TRAEFIK_DASHBOARD_ENABLE=false
+TRAEFIK_DASHBOARD_HOST=traefik.example.com
+TRAEFIK_DASHBOARD_BASEPATH=/traefik
 EOF
 fi
 
