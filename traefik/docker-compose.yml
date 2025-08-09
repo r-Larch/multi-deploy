@@ -21,12 +21,21 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./traefik.yml:/etc/traefik/traefik.yml:ro
       - ./letsencrypt:/letsencrypt
+      - ./dashboard_users:/etc/traefik/dashboard_users:ro
     labels:
       - "traefik.enable=${TRAEFIK_DASHBOARD_ENABLE:-false}"
       - "traefik.http.routers.dashboard.rule=Host(`${TRAEFIK_DASHBOARD_HOST:-traefik.example.com}`) && PathPrefix(`/traefik`)"
+      - "traefik.http.routers.dashboard.entrypoints=websecure"
+      - "traefik.http.routers.dashboard.tls.certresolver=letsencrypt"
       - "traefik.http.routers.dashboard.service=api@internal"
       - "traefik.http.routers.dashboard.middlewares=auth"
-      - "traefik.http.middlewares.auth.basicauth.usersfile=dashboard_users"
+      - "traefik.http.middlewares.auth.basicauth.usersfile=/etc/traefik/dashboard_users"
+      # Redirect HTTP to HTTPS for dashboard
+      - "traefik.http.routers.dashboard_http.rule=Host(`${TRAEFIK_DASHBOARD_HOST:-traefik.example.com}`)"
+      - "traefik.http.routers.dashboard_http.entrypoints=web"
+      - "traefik.http.routers.dashboard_http.middlewares=https_redirect"
+      - "traefik.http.middlewares.https_redirect.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.https_redirect.redirectscheme.permanent=true"
     networks:
       - web
 

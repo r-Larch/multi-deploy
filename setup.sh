@@ -48,6 +48,7 @@ if git clone --depth 1 "$REPO_URL" "$TMP_DIR/repo"; then
   rsync -a \
     --exclude 'apps/' \
     --exclude 'traefik/.env' \
+    --exclude 'traefik/dashboard_users' \
     --exclude 'traefik/letsencrypt/' \
     "$TMP_DIR/repo/" "$INSTALL_DIR/"
 else
