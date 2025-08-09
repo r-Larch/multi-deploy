@@ -149,8 +149,8 @@ echo "  2) Create an app:   app create"
 echo "  3) Configure it in: $INSTALL_DIR/apps/<name>/code"
 echo "  4) Enable deploys:  app enable <name>"
 echo "  5) Remove app:      app remove <name>"
-# Remove example project if present
+# Remove example app if present
 if [[ -d "$INSTALL_DIR/apps/example" ]]; then
   rm -rf "$INSTALL_DIR/apps/example"
-  echo "Removed example project."
+  echo "Removed example app."
 fi

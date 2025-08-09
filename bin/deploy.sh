@@ -1,24 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# deploy.sh <project_dir> <branch> <compose_file>
-# - Fetches the repo in <project_dir>
+# deploy.sh <app_dir> <branch> <compose_file>
+# - Fetches the repo in <app_dir>
 # - Checks out <branch>
 # - Runs docker compose build/up using the provided compose file
 
-project_dir=${1:?project directory required}
+app_dir=${1:?app directory required}
 branch=${2:?branch required}
 compose_file=${3:?compose file required}
 
-if [[ ! -d "$project_dir" ]]; then
-  echo "Project directory not found: $project_dir" >&2
+if [[ ! -d "$app_dir" ]]; then
+  echo "App directory not found: $app_dir" >&2
   exit 1
 fi
 
-cd "$project_dir"
+cd "$app_dir"
 
 if [[ ! -d .git ]]; then
-  echo "ERROR: $project_dir is not a git repository"
+  echo "ERROR: $app_dir is not a git repository"
   exit 2
 fi
 

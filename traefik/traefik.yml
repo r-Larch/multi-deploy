@@ -1,4 +1,4 @@
-# Global Traefik configuration for multi-project hosting
+# Global Traefik configuration for multi-app hosting
 api:
   dashboard: false
 
