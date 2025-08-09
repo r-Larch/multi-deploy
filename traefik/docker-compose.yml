@@ -9,9 +9,11 @@ services:
       - "--configFile=/etc/traefik/traefik.yml"
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
-      - "--api=${TRAEFIK_DASHBOARD_ENABLE:-false}"
-      - "--api.basePath=${TRAEFIK_DASHBOARD_BASEPATH:-/traefik}"
+    env_file:
+      - .env
     environment:
+      - TRAEFIK_API=${TRAEFIK_DASHBOARD_ENABLE:-false}
+      - TRAEFIK_API_BASEPATH=${TRAEFIK_DASHBOARD_BASEPATH-/traefik}
       - TRAEFIK_CERTIFICATESRESOLVERS_LETSENCRYPT_ACME_EMAIL=${TRAEFIK_ACME_EMAIL}
     ports:
       - "80:80"
