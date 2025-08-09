@@ -78,10 +78,12 @@ app enable myapp
 app disable myapp
 
 # Operate the stack
+app update myapp          # git pull and deploy
 app deploy myapp
 app start myapp
 app stop myapp
 app restart myapp
+app detail myapp          # prints app.env and main composer.yml (exec `docker compose config app` in app_meta_dir)
 app logs myapp            # all services
 app logs myapp api        # one service
 

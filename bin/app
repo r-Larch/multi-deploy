@@ -5,6 +5,7 @@
 #   app enable <name>     # enable & start systemd timer
 #   app disable <name>    # disable & stop systemd timer
 #   app remove <name>     # disable timer and delete app
+#   app update <name>     # git fetch/pull if changed, then up (no forced rebuild)
 #   app deploy <name>     # build & up (force deploy)
 #   app start <name>      # compose up -d
 #   app stop <name>       # compose down
@@ -344,6 +345,32 @@ cmd_deploy() {
   echo "Deployed '$name'"
 }
 
+cmd_update() {
+  local name=${1:-}
+  if [[ -z "$name" ]]; then red "Usage: $(basename "$0") update <name>"; exit 1; fi
+  load_app "$name"
+  ensure_repo
+  # Use watcher path that calls deploy.sh with change detection (no forced build)
+  "$INSTALL_DIR/bin/watch-and-deploy.sh" "$REPO" "$NAME" "$BRANCH" "$COMPOSE_FILE"
+}
+
+cmd_detail() {
+  local name=${1:-}
+  if [[ -z "$name" ]]; then red "Usage: $(basename "$0") detail <name>"; exit 1; fi
+  load_app "$name"
+  echo "File: $APP_ENV"
+  echo "----"
+  sed 's/^/    /' "$APP_ENV" || true
+  echo
+  echo "File: $APP_COMPOSE_FILE"
+  echo "----"
+  if [[ -f "$APP_COMPOSE_FILE" ]]; then
+    sed 's/^/    /' "$APP_COMPOSE_FILE"
+  else
+    echo "    (missing)"
+  fi
+}
+
 cmd_start() {
   local name=${1:-}
   if [[ -z "$name" ]]; then red "Usage: $(basename "$0") start <name>"; exit 1; fi
@@ -436,12 +463,14 @@ Usage:
   $(basename "$0") enable <name>     # enable & start systemd timer
   $(basename "$0") disable <name>    # disable & stop systemd timer
   $(basename "$0") remove <name>     # disable timer and delete app
+  $(basename "$0") update <name>     # git fetch/pull if changed, then up (no forced rebuild)
   $(basename "$0") deploy <name>     # build & up (force deploy)
   $(basename "$0") start <name>      # compose up -d
   $(basename "$0") stop <name>       # compose down
   $(basename "$0") restart <name>    # compose restart
   $(basename "$0") logs <name> [svc] # compose logs
   $(basename "$0") list              # list apps and status
+  $(basename "$0") detail <name>     # print app.env and compose.yml
 USAGE
 }
 
@@ -452,12 +481,14 @@ main() {
     enable) shift || true; cmd_enable "$@" ;;
     disable) shift || true; cmd_disable "$@" ;;
     remove) shift || true; cmd_remove "$@" ;;
+    update) shift || true; cmd_update "$@" ;;
     deploy) shift || true; cmd_deploy "$@" ;;
     start)  shift || true; cmd_start "$@" ;;
     stop)   shift || true; cmd_stop "$@" ;;
     restart)shift || true; cmd_restart "$@" ;;
     logs)   shift || true; cmd_logs "$@" ;;
     list)   shift || true; cmd_list "$@" ;;
+    detail) shift || true; cmd_detail "$@" ;;
     -h|--help|help|"") usage ;;
     *) red "Unknown command: $cmd"; echo; usage; exit 1 ;;
   esac

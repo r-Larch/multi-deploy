@@ -44,10 +44,9 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 
 # Always clone fresh copy to temp, then sync into INSTALL_DIR while preserving local state
 if git clone --depth 1 "$REPO_URL" "$TMP_DIR/repo"; then
-  # Preserve user state: apps/, legacy projects/, Traefik env and cert store
+  # Preserve user state: apps/, Traefik env and cert store
   rsync -a \
     --exclude 'apps/' \
-    --exclude 'projects/' \
     --exclude 'traefik/.env' \
     --exclude 'traefik/letsencrypt/' \
     "$TMP_DIR/repo/" "$INSTALL_DIR/"
@@ -58,7 +57,10 @@ fi
 
 # Ensure directories and executable bits
 mkdir -p "$INSTALL_DIR/apps"
-chmod +x "$INSTALL_DIR"/bin/*.sh || true
+# Mark all files in bin executable (supports scripts without .sh extension)
+if [[ -d "$INSTALL_DIR/bin" ]]; then
+  find "$INSTALL_DIR/bin" -type f -exec chmod +x {} +
+fi
 chmod 0644 "$INSTALL_DIR"/etc/systemd/*.service "$INSTALL_DIR"/etc/systemd/*.timer || true
 
 # --- Optional: Prepare SSH (for private repos). Not required for public HTTPS clones ---
