@@ -11,8 +11,8 @@ compose_file=${4:?compose file required}
 env_file=${5:-}
 
 root_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-proj_dir="$root_dir/projects/$name/code"
-server_compose="$root_dir/projects/$name/compose.server.yml"
+proj_meta_dir="$root_dir/projects/$name"
+proj_dir="$proj_meta_dir/code"
 
 mkdir -p "$proj_dir"
 
@@ -21,10 +21,12 @@ if [[ ! -d "$proj_dir/.git" ]]; then
   git clone "$repo" "$proj_dir"
 fi
 
-# Resolve optional env file; if relative, make it relative to repo worktree
+# Resolve optional env file; try absolute, meta dir, then repo dir
 if [[ -n "$env_file" ]]; then
   if [[ -f "$env_file" ]]; then
     export COMPOSE_ENV_FILE="$env_file"
+  elif [[ -f "$proj_meta_dir/$env_file" ]]; then
+    export COMPOSE_ENV_FILE="$proj_meta_dir/$env_file"
   elif [[ -f "$proj_dir/$env_file" ]]; then
     export COMPOSE_ENV_FILE="$proj_dir/$env_file"
   else
@@ -32,9 +34,6 @@ if [[ -n "$env_file" ]]; then
   fi
 fi
 
-compose_files=("$compose_file")
-if [[ -f "$server_compose" ]]; then
-  compose_files+=("$server_compose")
-fi
+compose_path="$proj_meta_dir/$compose_file"
 
-"$root_dir/bin/deploy.sh" "$proj_dir" "$branch" "${compose_files[@]}"
+"$root_dir/bin/deploy.sh" "$proj_dir" "$branch" "$compose_path"

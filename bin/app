@@ -104,48 +104,23 @@ load_project() {
   PROJ_META_DIR="$PROJECTS_DIR/$name"
   PROJ_ENV="$PROJ_META_DIR/project.env"
   PROJ_REPO_DIR="$PROJ_META_DIR/code"
-  PROJ_OVERRIDE="$PROJ_META_DIR/compose.server.yml"
   if [[ ! -f "$PROJ_ENV" ]]; then red "Missing $PROJ_ENV"; exit 1; fi
   # shellcheck disable=SC1090
   source "$PROJ_ENV"
   if [[ -z "${COMPOSE_FILE:-}" ]]; then red "COMPOSE_FILE not set in $PROJ_ENV"; exit 1; fi
-  PROJ_COMPOSE_BASE="$PROJ_REPO_DIR/$COMPOSE_FILE"
-}
-
-resolve_env_file() {
-  COMPOSE_ENV_ARG=()
-  local ef="${ENV_FILE:-}"
-  local silent="${1:-}"
-  if [[ -n "$ef" ]]; then
-    if [[ -f "$ef" ]]; then
-      COMPOSE_ENV_ARG=(--env-file "$ef")
-    elif [[ -f "$PROJ_REPO_DIR/$ef" ]]; then
-      COMPOSE_ENV_ARG=(--env-file "$PROJ_REPO_DIR/$ef")
-    else
-      if [[ "$silent" != "silent" ]]; then
-        echo "Warning: env file not found: $ef" >&2
-      fi
-    fi
-  fi
+  PROJ_COMPOSE_FILE="$PROJ_META_DIR/$COMPOSE_FILE"
 }
 
 build_compose_cmd() {
   compose_cmd=(docker compose)
-  # optional env file
-  if (( ${#COMPOSE_ENV_ARG[@]} > 0 )); then
-    compose_cmd+=("${COMPOSE_ENV_ARG[@]}")
-  fi
-  compose_cmd+=(-f "$PROJ_COMPOSE_BASE")
-  if [[ -f "$PROJ_OVERRIDE" ]]; then
-    compose_cmd+=(-f "$PROJ_OVERRIDE")
-  fi
+  compose_cmd+=(-f "$PROJ_COMPOSE_FILE")
 }
 
 ensure_repo() {
   # Clone if repo missing, using existing watch-and-deploy logic
   if [[ ! -d "$PROJ_REPO_DIR/.git" ]]; then
     echo "Cloning repo for project '$NAME' into $PROJ_REPO_DIR ..."
-    "$INSTALL_DIR/bin/watch-and-deploy.sh" "$REPO" "$NAME" "$BRANCH" "$COMPOSE_FILE" "${ENV_FILE:-}"
+    "$INSTALL_DIR/bin/watch-and-deploy.sh" "$REPO" "$NAME" "$BRANCH" "$COMPOSE_FILE"
   fi
 }
 
@@ -168,7 +143,7 @@ cmd_create() {
   if [[ -z "$branch" ]]; then branch=main; fi
 
   # Paths per layout:
-  # - metadata and override in $INSTALL_DIR/projects/<name>
+  # - metadata and stack files in $INSTALL_DIR/projects/<name>
   # - repo worktree in $INSTALL_DIR/projects/<name>/code
   local meta_dir="$PROJECTS_DIR/$name"
   local repo_dir="$PROJECTS_DIR/$name/code"
@@ -204,88 +179,96 @@ cmd_create() {
     fi
   )
 
-  # Detect compose file in repo root
-  local compose_file
-  if ! compose_file=$(find_compose_file "$repo_dir"); then
-    red "No compose file found in $repo_dir. You can create one and rerun."
-    exit 1
+  # Detect a compose file in repo root (optional; for selecting service)
+  local compose_file_repo=""
+  if compose_file_repo=$(find_compose_file "$repo_dir"); then
+    echo "Detected compose file in repo: $compose_file_repo"
+  else
+    echo "No compose file found in repo root. You can add one under code/."
   fi
-  echo "Using compose file: $compose_file"
 
-  local compose_path="$repo_dir/$compose_file"
-
-  # List services
-  echo
-  echo "Detecting services in $compose_file ..."
-  mapfile -t services < <(list_services_from_compose "$compose_path")
-  if (( ${#services[@]} == 0 )); then
-    red "No services found in $compose_file"; exit 1
-  fi
-  echo "Found services: ${services[*]}"
-
-  # Choose the primary service to expose via Traefik
-  ## TODO default to $name
+  # List services for selection (if compose found)
   local svc=""
-  echo
-  echo "Select the service to expose behind Traefik:"
-  local i=1
-  for s in "${services[@]}"; do echo "  [$i] $s"; ((i++)); done
-  while true; do
-    read -r -p "Service number: " idx || true
-    if [[ "$idx" =~ ^[0-9]+$ ]] && (( idx>=1 && idx<=${#services[@]} )); then
-      svc="${services[idx-1]}"; break
+  if [[ -n "$compose_file_repo" ]]; then
+    echo
+    echo "Detecting services in $compose_file_repo ..."
+    mapfile -t services < <(list_services_from_compose "$repo_dir/$compose_file_repo")
+    if (( ${#services[@]} > 0 )); then
+      echo "Found services: ${services[*]}"
+      echo
+      echo "Select the service to attach to Traefik (network+enable only):"
+      local i=1
+      for s in "${services[@]}"; do echo "  [$i] $s"; ((i++)); done
+      while true; do
+        read -r -p "Service number: " idx || true
+        if [[ "$idx" =~ ^[0-9]+$ ]] && (( idx>=1 && idx<=${#services[@]} )); then
+          svc="${services[idx-1]}"; break
+        fi
+        echo "Invalid selection"
+      done
     fi
-    echo "Invalid selection"
-  done
+  fi
 
-  echo
-  echo "Existing Traefik-related labels in $compose_file (if any):"
-  extract_traefik_labels "$compose_path" | sed 's/^/  /' || true
-  ## TODO would be nice to parse these, change service name to $svc and merge with domain, router, entrypoints, certresolver and port.
-  ## labels always start with /\s+- "traefik\./
-
-  # Ask for Traefik settings
-  echo
-  local domain router entrypoints certresolver port
-  domain=$(default_read "Production domain (Host rule)" "www.example.com")
-  router=$(default_read "Router/service name (for labels)" "$svc")
-  entrypoints=$(default_read "Traefik entrypoints" "websecure")
-  certresolver=$(default_read "Traefik certresolver" "letsencrypt")
-  port=$(default_read "Internal app port (container)" "8080")
-
-  # Write project.env into meta dir (matches systemd EnvironmentFile path)
+  # Write project.env into meta dir
   local env_path="$meta_dir/project.env"
   cat >"$env_path" <<EOF
 # Auto-generated by app create
 NAME=$name
 REPO=$repo
 BRANCH=$branch
-COMPOSE_FILE=$compose_file
-# Optional path to .env file passed to compose (if compose does not use local .env)
-ENV_FILE=
+COMPOSE_FILE=compose.yml
 EOF
 
-  # Write compose.server.yml override into meta dir (matches watcher path)
-  local bt=$'`'
+  # Write compose.yml in meta dir with include of repo compose and server override
+  local stack_compose="$meta_dir/compose.yml"
+  if [[ -n "$compose_file_repo" ]]; then
+    cat >"$stack_compose" <<EOF
+include:
+  - path:
+      - code/$compose_file_repo
+      - compose.server.yml
+EOF
+  else
+    cat >"$stack_compose" <<EOF
+include:
+  - path:
+      - compose.server.yml
+EOF
+  fi
+
+  # Write minimal compose.server.yml override
   local override_path="$meta_dir/compose.server.yml"
-  cat >"$override_path" <<EOF
+  if [[ -n "$svc" ]]; then
+    cat >"$override_path" <<EOF
 services:
   $svc:
     networks:
       - web
     labels:
       - "traefik.enable=true"
-      - "traefik.docker.network=web"
-      - "traefik.http.services.$router.loadbalancer.server.port=$port"
-      - "traefik.http.routers.$router.entrypoints=$entrypoints"
-      - "traefik.http.routers.$router.tls.certresolver=$certresolver"
-      - "traefik.http.routers.$router.rule=Host(${bt}$domain${bt})"
 
 networks:
   web:
     external: true
     name: web
 EOF
+  else
+    # If no service known yet, create a template and leave TODO
+    cat >"$override_path" <<'EOF'
+# Select a service name from your repo's compose and uncomment below
+# services:
+#   app:
+#     networks:
+#       - web
+#     labels:
+#       - "traefik.enable=true"
+
+networks:
+  web:
+    external: true
+    name: web
+EOF
+  fi
 
   echo
   bold "Review"
@@ -293,14 +276,7 @@ EOF
   echo "Repo worktree:     $repo_dir"
   echo "Repo URL:          $repo"
   echo "Branch:            $branch"
-  echo "Compose file:      $compose_file"
-  echo "Expose service:    $svc"
-  echo "Domain:            $domain"
-  echo "Router name:       $router"
-  echo "Entrypoints:       $entrypoints"
-  echo "Certresolver:      $certresolver"
-  echo "Internal port:     $port"
-  echo "project.env:       $env_path"
+  echo "Stack compose:     $stack_compose"
   echo "override compose:  $override_path"
 
   echo
@@ -359,7 +335,6 @@ cmd_deploy() {
   local name=${1:-}
   if [[ -z "$name" ]]; then red "Usage: $(basename "$0") deploy <name>"; exit 1; fi
   load_project "$name"
-  resolve_env_file
   ensure_repo
   build_compose_cmd
   echo "Building images..."
@@ -373,7 +348,6 @@ cmd_start() {
   local name=${1:-}
   if [[ -z "$name" ]]; then red "Usage: $(basename "$0") start <name>"; exit 1; fi
   load_project "$name"
-  resolve_env_file
   ensure_repo
   build_compose_cmd
   "${compose_cmd[@]}" up -d
@@ -384,7 +358,6 @@ cmd_stop() {
   local name=${1:-}
   if [[ -z "$name" ]]; then red "Usage: $(basename "$0") stop <name>"; exit 1; fi
   load_project "$name"
-  resolve_env_file
   ensure_repo
   build_compose_cmd
   "${compose_cmd[@]}" down
@@ -395,7 +368,6 @@ cmd_restart() {
   local name=${1:-}
   if [[ -z "$name" ]]; then red "Usage: $(basename "$0") restart <name>"; exit 1; fi
   load_project "$name"
-  resolve_env_file
   ensure_repo
   build_compose_cmd
   # Prefer compose restart for speed
@@ -408,7 +380,6 @@ cmd_logs() {
   local svc=${2:-}
   if [[ -z "$name" ]]; then red "Usage: $(basename "$0") logs <name> [service]"; exit 1; fi
   load_project "$name"
-  resolve_env_file
   ensure_repo
   build_compose_cmd
   if [[ -n "$svc" ]]; then
@@ -439,12 +410,10 @@ cmd_list() {
     source "$envf" || true
     PROJ_META_DIR="$d"
     PROJ_REPO_DIR="$d/code"
-    PROJ_OVERRIDE="$d/compose.server.yml"
-    PROJ_COMPOSE_BASE="$PROJ_REPO_DIR/${COMPOSE_FILE:-}"
-    resolve_env_file silent || true
+    PROJ_COMPOSE_FILE="$PROJ_META_DIR/${COMPOSE_FILE:-compose.yml}"
     build_compose_cmd || true
     out=$({ "${compose_cmd[@]}" ps 2>/dev/null || true; } | sed '/^$/d')
-    if [[ -z "$out" || ! -f "$PROJ_COMPOSE_BASE" ]]; then
+    if [[ -z "$out" || ! -f "$PROJ_COMPOSE_FILE" ]]; then
       printf "%-24s %-12s %-18s\n" "$name" "$auto" "stopped"
       continue
     fi

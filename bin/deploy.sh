@@ -1,20 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# deploy.sh <project_dir> <branch> [compose_files...]
-# - Clones (or fetches) the repo in <project_dir>
+# deploy.sh <project_dir> <branch> <compose_file>
+# - Fetches the repo in <project_dir>
 # - Checks out <branch>
-# - Runs docker compose build/up using one or more compose files
+# - Runs docker compose build/up using the provided compose file
 
 project_dir=${1:?project directory required}
 branch=${2:?branch required}
-shift 2
-
-if [[ $# -gt 0 ]]; then
-  compose_files=("$@")
-else
-  compose_files=("compose.yml")
-fi
+compose_file=${3:?compose file required}
 
 if [[ ! -d "$project_dir" ]]; then
   echo "Project directory not found: $project_dir" >&2
@@ -58,9 +52,7 @@ compose_cmd=(docker compose)
 if [[ -n "${COMPOSE_ENV_FILE:-}" && -f "$COMPOSE_ENV_FILE" ]]; then
   compose_cmd+=(--env-file "$COMPOSE_ENV_FILE")
 fi
-for f in "${compose_files[@]}"; do
-  compose_cmd+=(-f "$f")
-done
+compose_cmd+=(-f "$compose_file")
 
 if [[ $changed -eq 1 ]]; then
   echo "Building images..."

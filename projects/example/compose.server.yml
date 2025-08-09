@@ -1,16 +1,11 @@
 
 services:
   app:
-    # This file is used as an override with: docker compose -f compose.yml -f compose.server.yml
+    # This file is used as an override in compose.yml
     networks:
       - web
     labels:
       - "traefik.enable=true"
-      - "traefik.docker.network=web"
-      - "traefik.http.routers.app.entrypoints=websecure"
-      - "traefik.http.routers.app.tls.certresolver=letsencrypt"
-      # IMPORTANT: Set your production hostname here (update as needed)
-      - "traefik.http.routers.app.rule=Host(`www.example.com`)"
 
 networks:
   web:
