@@ -230,6 +230,9 @@ services:
       - web
     labels:
       - "traefik.enable=true"
+      #- "traefik.http.routers.myapp.rule=Host(`myapp-domain.com`)"
+      #- "traefik.http.routers.myapp.entrypoints=websecure"
+      #- "traefik.http.routers.myapp.tls.certresolver=letsencrypt"
 
 networks:
   web:
@@ -245,6 +248,9 @@ EOF
 #       - web
 #     labels:
 #       - "traefik.enable=true"
+#       - "traefik.http.routers.myapp.rule=Host(`myapp-domain.com`)"
+#       - "traefik.http.routers.myapp.entrypoints=websecure"
+#       - "traefik.http.routers.myapp.tls.certresolver=letsencrypt"
 
 networks:
   web:
