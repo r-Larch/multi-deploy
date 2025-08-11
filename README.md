@@ -1,17 +1,44 @@
 # Multi Deploy
 
-Host multiple Docker Compose apps on one Ubuntu server with a single Traefik reverse proxy, automatic HTTPS, and hands-free deployments on git pushes (pull-based).
+🚀 **Deploy multiple Docker Compose apps effortlessly on a single Ubuntu server**
 
-## Why this repo?
+Perfect for rapid prototyping, staging environments, and cost-effective hosting without complex CI/CD infrastructure. While designed for experiments and staging, it can be used for production but it's not recommended.
 
-- One Traefik instance terminates TLS for all apps
-- Each app lives in its own git repo and Compose file
-- No webhooks required: systemd timers poll, build, and restart if there are changes
-- Simple, readable Bash scripts and systemd units
+## Why Multi Deploy?
 
-## Quick start (one-liner installer)
+**💡 The Problem:** Setting up individual hosting, CI/CD pipelines, and SSL certificates for every experiment or staging app is expensive and time-consuming. Why reinvent the wheel every time?
 
-Run on a fresh Ubuntu 22.04+ server as root:
+**✅ The Solution:** One server, one setup, unlimited apps with automatic HTTPS and deployments.
+
+### Key Benefits
+
+- **🏗️ Quick Experiments** — Deploy any Docker Compose app in under 5 minutes
+- **💰 Cost Effective** — Host multiple apps on one server instead of paying for separate hosting/serverless
+- **🔒 Automatic HTTPS** — Let's Encrypt certificates managed automatically via Traefik
+- **🔄 Auto-Deploy** — Git-based deployments without webhooks or complex CI/CD
+- **🛠️ Simple Management** — Powerful CLI for app lifecycle and debugging
+- **📦 No Vendor Lock-in** — Standard Docker Compose, runs anywhere
+
+### Perfect For
+
+- **Staging environments** for multiple projects
+- **Personal projects** and side experiments  
+- **Small team demos** and proof-of-concepts
+- **Development previews** from feature branches
+- **Simple production apps** (where scaling is not needed)
+
+### How It Works
+
+- **One Traefik instance** handles reverse proxy and SSL for all apps
+- **Each app** lives in its own Git repo with a standard Docker Compose file
+- **Systemd timers** poll for changes and auto-deploy (no webhooks needed)
+- **Simple CLI** manages everything: create, deploy, debug, monitor
+
+## 🚀 Quick Start
+
+### 1. One-Line Setup
+
+Run on a fresh Ubuntu 22.04+ server as root, or to update an existing installation:
 
 ```bash
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/r-Larch/multi-deploy/refs/heads/master/setup.sh)"
@@ -25,162 +52,343 @@ The installer will:
 - Install systemd units for auto-deploy timers
 - Add `/opt/multi-deploy/bin` to PATH (new shells)
 
-## Create your first app
-
-1. Create the app definition
-   - Run: `app create`
-   - Answer prompts (name, repo SSH/HTTPS, branch)
-   - The repo will be cloned into `/opt/multi-deploy/apps/<name>/code`
-   - The script generates in `/opt/multi-deploy/apps/<name>/`:
-     - `compose.yml` (stack file that includes `code/compose*.yml` and `compose.server.yml`)
-     - `compose.server.yml` (minimal: joins `web` and sets `traefik.enable=true` for one service)
-     - `app.env` with `COMPOSE_FILE=compose.yml`
-
-2. Configure the app repo if needed
-   - `cd /opt/multi-deploy/apps/<name>/code`
-   - Set env, secrets, run migrations, etc.
-
-3. Enable auto-deploy
-   - Run: `app enable <name>`
-   - A systemd timer will poll every minute: fetch, build if changed, and `up -d --remove-orphans` against `/opt/multi-deploy/apps/<name>/compose.yml`
-
-Disable anytime: `app disable <name>`
-Remove an app: `app delete <name>`
-
-## CLI reference (app)
-
-- `create`
-  - Interactive setup wizard
-- `enable <name>`
-  - Enable and start the per-app systemd timer
-- `disable <name>`
-  - Disable and stop the per-app systemd timer
-- `delete <name>`
-  - Disable timer and delete `/opt/multi-deploy/apps/<name>`
-- `timers <name> [on|off]`
-  - Get/set the systemd timer state (git-backed apps only)
-- `deploy <name>`
-  - Force deploy now: `docker compose build --pull` then `up -d --remove-orphans`
-- `up <name>`
-  - Start services: `docker compose up -d`
-- `down <name>`
-  - Stop services: `docker compose down`
-- `restart <name>`
-  - Restart services: `docker compose restart` (falls back to `up -d --force-recreate`)
-- `logs <name> [service]`
-  - Stream logs with `docker compose logs -f --tail=200`
-- `pull <name>`
-  - Git fetch + reset to origin/BRANCH-NAME
-- `shell <name> <service>`
-  - Open a shell inside a running container
-- `run <name> ...args`
-  - Run raw docker compose subcommands with app context
-- `list`
-  - List all apps with auto-deploy status and container status (e.g., `running 2/3` or `stopped`)
-- `detail <name> [service]`
-  - Show app path, type, timer state, list of services, and a summary of `docker compose config`. If `service` is provided, prints only that service’s config.
-
-### Git utility (app-git)
-
-- `app-git <name> status` — prints branch, commit, ahead/behind
-- `app-git <name> fetch`
-- `app-git <name> pull` — fetch + hard reset to origin/BRANCH-NAME
-- `app-git <name> reset-hard` — hard reset to origin/BRANCH-NAME
-- `app-git <name> switch BRANCH-NAME` — track and switch to origin/BRANCH-NAME
-
-Examples:
+### 2. Create Your First App
 
 ```bash
-# Manage auto-deploy
-app enable myapp
-app disable myapp
+# Interactively create a new app from any Docker Compose repo (private SSH repos supported)
+sudo app create myapp https://github.com/user/my-compose-repo.git
+# The setup will show you a deploy key if using SSH - add it to your repo's settings
+# The create command helps you prepare a compose override file so you can make adjustments,
+# like configuring your production app to run in a staging environment
 
-# Operate the stack
-app update myapp          # git pull and deploy
-app deploy myapp
-app up myapp
-app down myapp
-app restart myapp
-app detail myapp          # prints summary from `docker compose config`
-app logs myapp            # all services
-app logs myapp api        # one service
+# Configure or override the Traefik router and middleware for your app
+# (if not already configured in your repo)
+labels:
+  - "traefik.enable=true"
+  # You can also add just this line to override the domain if your repo already has valid Traefik config
+  - "traefik.http.routers.myapp.rule=Host(`myapp-domain.com`)" 
+  - "traefik.http.routers.myapp.entrypoints=websecure"
+  - "traefik.http.routers.myapp.tls.certresolver=letsencrypt"
 
-# Git helpers
-app pull myapp
-app shell myapp api
-app run myapp ps
+# After configuring, deploy:
+sudo app deploy myapp
+# Your app is now live at https://myapp-domain.com
 
-# Overview
-app list
+# (Optional) Enable auto-deployment (polls every minute for changes)
+sudo app timers myapp on
+
+# Manual deployment (pull latest changes and deploy):
+sudo app update myapp
 ```
 
-## How it works
+**What happens behind the scenes:**
 
-- Traefik runs globally from `/opt/multi-deploy/traefik` on a shared Docker network named `web`
-- Each app stack is defined by a single compose file at `/opt/multi-deploy/apps/<name>/compose.yml`
-  - This file includes the app repo compose (e.g., `code/compose.yml`) and the local `compose.server.yml`
-- The systemd service `multi-deploy@<name>.service` reads `/opt/multi-deploy/apps/<name>/app.env` and calls `bin/watch-and-deploy.sh`
-- The timer `multi-deploy@<name>.timer` runs the service every minute
+- Repo cloned to `/opt/multi-deploy/apps/myapp/code`
+- Generated `compose.yml` uses `include:` to include your repo's compose files + Traefik config
+- Systemd timer starts polling for git changes and auto-deploying
 
-## Repository layout
+### 3. That's It
 
-- `/opt/multi-deploy/traefik/`        Traefik compose and config (ACME email in `.env`)
-- `/opt/multi-deploy/apps/<name>/`
-  - `code/`                           App git worktree (your repo)
-  - `app.env`                         App definition (repo, branch, COMPOSE_FILE, optional env file)
-  - `compose.yml`                     Stack file that includes repo compose and server override
-  - `compose.server.yml`              Server override (joins `web`, adds `traefik.enable=true`)
-- `/opt/multi-deploy/bin/`            Scripts: `app`, `app-compose`, `app-git`, `app-deploy`, `deploy.sh`, `watch-and-deploy.sh`
-  - All scripts share helpers via `bin/lib-app` and delegate to `app-*` utilities to avoid duplication.
-- `/opt/multi-deploy/etc/systemd/`    Unit and timer templates
+Your app automatically deploys on git pushes. No webhooks, no CI/CD setup required.
 
-## Requirements
+## App Management
 
-- Ubuntu 22.04+
-- Open ports 80 and 443
+The `app` command provides everything you need to manage your deployments:
 
-Git access
+### Essential Commands
 
-- Repos can be public (HTTPS or SSH) or private (SSH recommended). Setup generates an SSH key and preloads GitHub host key. Use HTTPS if you prefer for public repos.
-- If using SSH, ensure your shell has an active ssh-agent and your key is loaded:
-  - `eval "$(ssh-agent -s)"`
-  - `ssh-add /root/.ssh/id_ed25519`
+```bash
+# List all apps and their status
+sudo app list
 
-## Compose and Traefik tips
+# Get detailed info about an app (shows services, containers, git status)
+sudo app detail myapp
 
-- Don’t publish ports on app services; Traefik connects over the shared `web` network
-- In `compose.server.yml`, only the service needs `traefik.enable=true` and to join the `web` network
-- Put all other Traefik labels in your app repo compose if needed (middlewares, routers, etc.)
+# View logs (last 50 lines, follows by default)
+sudo app logs myapp
 
-## Operations
+# Manual deployment (useful for testing)
+sudo app deploy myapp
 
-- Check Traefik: `docker ps`, `docker logs traefik`
-- Check a timer: `systemctl status multi-deploy@<name>.timer`
-- Check a run: `journalctl -u multi-deploy@<name>.service -n 200 -f`
-- Auto-deploy logs: per-app logs in `/opt/multi-deploy/apps/<name>/logs/` (kept 7 days)
-- Manual deploy: `app enable <name>` triggers on the next minute or run service manually
+# Start/stop/restart services
+sudo app up myapp
+sudo app down myapp  
+sudo app restart myapp
 
-## Uninstall / Cleanup
+# Access running containers
+sudo app shell myapp [service-name]    # Interactive shell
+sudo app run myapp [service-name] command  # Run one-off commands
 
-- Disable timers: `app disable <name>` for each app
-- Remove apps: `app delete <name>`
-- Stop Traefik: `cd /opt/multi-deploy/traefik && docker compose down`
-- Remove directory: `rm -rf /opt/multi-deploy` (be careful)
+# Git operations (useful for branch deployments)
+sudo app pull myapp                    # Pull latest changes
+sudo app git myapp status             # Check git status  
+sudo app git myapp switch feature-branch  # Deploy a different branch
+```
 
-## FAQ
+### Timer Management
 
-- Can I use HTTPS clone URLs? Yes. For public repos, HTTPS is fine. For private, use SSH keys.
-- How often does it deploy? Every minute by default (see timer).
-- Can I prune images? Yes, manually run `docker system prune -f` when desired.
+```bash
+# View auto-deploy status for an app
+sudo app timers myapp
 
-## TODO
+# Control auto-deployment
+sudo app timers myapp on   # Start auto-deployment timer
+sudo app timers myapp off  # Stop auto-deployment (app keeps running)
 
-- Shared helper library for scripts (lib-app) [done]
-- app detail: include per-service `docker compose config <service>` and richer git status (ahead/behind) [done]
-- app create: allow optional name, static apps without timers [done]
-- app create: show id_ed25519.pub for deploy key setup (colorized) [todo]
-- Auto-deploy logs with rotation (keep last 7 days, include build logs) [done]
-- Rename commands: stop->down, start->up, remove->delete [done]
-- Add `timers <name> [on|off]` command as a front-end for enable/disable [done]
-- New commands: pull, shell, run [done]
+# Complete removal
+sudo app delete myapp    # Stops services, removes files, disables timer
+```
 
+## 🔧 Troubleshooting
+
+Having issues? The `app` command has built-in debugging tools to help you identify problems quickly.
+
+### Check Overall Health
+
+```bash
+# See all apps and their current status
+sudo app list
+
+# Get detailed information about a specific app
+sudo app detail myapp
+# Shows: git status, running containers, service states, recent deployments
+```
+
+### Debug Deployment Issues
+
+```bash
+# Check if auto-deployment is working
+sudo app timers myapp
+
+# Manually trigger deployment to see errors
+sudo app deploy myapp
+
+# Check git status for your app
+sudo app git myapp status
+# Verify repo is clean and on the right branch
+
+# Switch to a different branch if needed
+sudo app git myapp switch main
+```
+
+### Debug Runtime Issues
+
+```bash
+# Check if containers are running
+sudo app list
+
+# View real-time logs
+sudo app logs myapp
+# Add service name for specific container: sudo app logs myapp web
+
+# Check the merged compose config:
+sudo app detail myapp
+
+# Access container for debugging
+sudo app shell myapp web
+
+# Or run specific commands:
+sudo app run myapp ls   # same as: docker compose -f <app-compose-file> ls
+sudo app run myapp kill # same as: docker compose -f <app-compose-file> kill
+
+# Restart if containers are stuck
+sudo app restart myapp
+```
+
+### Common Issues
+
+**App not accessible from web:**
+
+- Check Traefik labels in your `compose.yml` or `compose.server.yml`
+- Verify domain DNS points to your server
+- Enable and Check Traefik dashboard eg. `https://traefik.yourdomain.com`
+
+**Deployment not happening automatically:**
+
+- Run `sudo app timers` to verify timer is enabled
+- Check timer logs: `journalctl -u multi-deploy@myapp.timer`
+- Verify git repo is accessible and has changes
+
+**Container won't start:**
+
+- Check logs: `sudo app logs myapp`  
+- Try manual deployment: `sudo app deploy myapp`
+- Access container for debugging: `sudo app shell myapp service-name`
+
+**Permission issues:**
+
+- All `app` commands should be run with `sudo`
+- Check file ownership in `/opt/multi-deploy/apps/myapp/`
+
+## Architecture Overview
+
+### Directory Structure
+
+```text
+/opt/multi-deploy/
+├── bin/           # CLI tools (app, app-compose, app-git, app-deploy)
+├── apps/          # Your deployed applications
+│   └── myapp/
+│       ├── code/          # Your git repo
+│       ├── compose.yml    # Generated compose file
+│       ├── compose.server.yml  # Traefik configuration
+│       └── app.env        # App-specific environment
+├── traefik/       # Traefik reverse proxy config
+└── etc/systemd/   # Systemd timer templates
+```
+
+### How Auto-Deployment Works
+
+1. **Systemd timer** (every minute) runs `watch-and-deploy.sh`
+2. **Git check:** Fetch latest commits from origin
+3. **Change detection:** Compare local vs remote branch  
+4. **Build & deploy:** If changes found, run `docker compose build --pull && up -d`
+5. **Logging:** All output saved to `/opt/multi-deploy/apps/<name>/deploy.log` (rotated weekly)
+
+### Networking
+
+- **External network `web`:** Shared between all apps for Traefik routing
+- **Traefik:** Handles SSL termination, routing, and Let's Encrypt certificates
+- **Per-app networks:** Each app gets isolated internal networking via Docker Compose
+
+## Advanced Usage
+
+### Custom Compose Files
+
+Your app repo can contain:
+
+- `compose.yml` or `docker-compose.yml` - Main application definition
+- Multi-deploy will include both files when building the final stack
+
+### Environment Variables
+
+Set app-specific variables in `/opt/multi-deploy/apps/<name>/app.env`:
+
+```bash
+# Edit app environment
+sudo nano /opt/multi-deploy/apps/myapp/app.env
+
+# Restart to apply changes
+sudo app restart myapp
+```
+
+### Branch Deployments
+
+Deploy different branches for staging/testing:
+
+```bash
+# Switch to feature branch
+sudo app git myapp switch feature-xyz
+
+# Deploy the branch
+sudo app deploy myapp
+
+# Switch back to main when done
+sudo app git myapp switch main
+```
+
+### Manual Deployments
+
+Disable auto-deployment for manual control:
+
+```bash
+# Stop auto-deployment but keep app running
+sudo app timers myapp off
+
+# Deploy manually when ready
+sudo app deploy myapp
+```
+
+## 📚 Complete CLI Reference
+
+### Main Commands
+
+- **`create`** - Interactive setup wizard for new apps
+- **`list`** - List all apps with status (running containers, auto-deploy state)
+- **`detail <name> [service]`** - Detailed app info: git status, services, containers
+- **`delete <name>`** - Remove app completely (stops containers, deletes files)
+- **`timers <name>`** - Show auto-deploy status for an app
+- **`timers <name> on`** - Start auto-deployment timer (polls every minute)
+- **`timers <name> off`** - Stop auto-deployment timer (app keeps running)
+
+### Deployment Commands
+
+- **`deploy <name>`** - Manual deployment: build and restart containers
+- **`up <name>`** - Start all services with `docker compose up -d`
+- **`down <name>`** - Stop all services with `docker compose down`
+- **`restart <name>`** - Restart all services
+
+### Debugging Commands
+
+- **`logs <name> [service]`** - View logs (follows by default, last 200 lines)
+- **`shell <name> <service>`** - Open interactive shell in running container
+- **`run <name> <service> command`** - Run one-off command in service container
+
+### Git Commands
+
+All git operations maintain app context and work within the app's code directory:
+
+- **`pull <name>`** - Git fetch + hard reset to origin/branch
+- **`git <name> status`** - Show git status (branch, commits ahead/behind)
+- **`git <name> fetch`** - Fetch latest commits
+- **`git <name> pull`** - Fetch + hard reset to origin/branch  
+- **`git <name> reset-hard`** - Hard reset to origin/branch
+- **`git <name> switch <branch>`** - Switch and track origin/branch
+
+### Usage Examples
+
+```bash
+# Quick health check
+sudo app list
+sudo app detail myapp
+
+# Manage deployments
+sudo app timers myapp on      # Start auto-deployment
+sudo app deploy myapp          # Manual deployment
+sudo app timers myapp off     # Stop auto-deployment
+
+# Debug issues
+sudo app logs myapp web        # View specific service logs
+sudo app shell myapp web       # Access container shell
+sudo app git myapp status      # Check git state
+
+# Branch deployments
+sudo app git myapp switch staging  # Deploy staging branch
+sudo app deploy myapp              # Deploy the new branch
+sudo app git myapp switch main     # Back to main branch
+```
+
+## Requirements & Compatibility
+
+- **OS:** Ubuntu 22.04+ (other Debian-based distros may work)
+- **Memory:** 2GB+ recommended (depends on your apps)
+- **Storage:** 20GB+ for system + your app containers and logs
+- **Network:** Public IP with ports 80/443 accessible
+- **Domain:** DNS pointing to your server for automatic HTTPS
+
+### Git Access
+
+- **Public repos:** HTTPS or SSH both work fine
+- **Private repos:** SSH recommended (setup generates SSH key automatically)
+- **SSH setup:** Ensure your shell has ssh-agent and key loaded if needed:
+
+  ```bash
+  eval "$(ssh-agent -s)"
+  ssh-add /root/.ssh/id_ed25519
+  ```
+
+### Docker Compose Tips
+
+- Don't publish ports on app services; Traefik connects over the shared `web` network
+- In `compose.server.yml`, only the web service needs `traefik.enable=true` and to join the `web` network
+- Put additional Traefik labels in your app repo compose files if needed (middlewares, routers, etc.)
+
+## Contributing & Support
+
+This project is designed for simplicity and experimentation. Contributions welcome!
+
+- **Issues:** Report bugs or request features via GitHub Issues
+- **Pull Requests:** Improvements to scripts, documentation, or examples
+- **Community:** Share your multi-deploy setups and use cases
+
+Remember: This tool prioritizes simplicity over complexity. It's perfect for experiments and staging, but evaluate carefully for production workloads requiring high availability or complex orchestration.

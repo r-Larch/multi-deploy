@@ -117,8 +117,12 @@ cmd_create() {
     name=$(slugify "$name")
   fi
   if [[ -z "$name" ]]; then red "App name required"; exit 1; fi
-
-  repo=$(default_read "Git repo URL (SSH, leave empty for static app)" "")
+  
+  if [[ -n "${2:-}" ]]; then
+    repo=$(slugify "$2"); shift || true
+  else
+    repo=$(default_read "Git repo URL (SSH, leave empty for static app)" "")
+  fi
   branch=""
   if [[ -n "$repo" ]]; then
     branch=$(default_read "Git branch" "main")
