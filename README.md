@@ -287,6 +287,37 @@ sudo app deploy myapp
 sudo app git myapp switch main
 ```
 
+### Traefik Dashboard
+
+Enable the Traefik dashboard for monitoring and debugging your reverse proxy:
+
+```bash
+# Navigate to Traefik directory
+cd /opt/multi-deploy/traefik
+
+# Edit the environment file
+sudo nano .env
+```
+
+Update the dashboard settings:
+
+```bash
+TRAEFIK_DASHBOARD_ENABLE=true
+TRAEFIK_DASHBOARD_HOST=my-domain.com
+```
+
+Create dashboard user credentials:
+
+```bash
+# Add a user to the dashboard (replace with your username/password)
+echo "$(htpasswd -nb myusername MyPassw0rd123)" | sudo tee -a dashboard_users
+
+# Restart Traefik to apply changes
+sudo docker compose restart
+```
+
+Your Traefik dashboard will be available at `https://my-domain.com` with basic authentication using the credentials you created.
+
 ### Manual Deployments
 
 Disable auto-deployment for manual control:
