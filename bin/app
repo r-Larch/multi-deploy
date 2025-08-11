@@ -118,8 +118,8 @@ cmd_create() {
   fi
   if [[ -z "$name" ]]; then red "App name required"; exit 1; fi
   
-  if [[ -n "${2:-}" ]]; then
-    repo=$(slugify "$2"); shift || true
+  if [[ -n "${1:-}" ]]; then
+    repo=$1; shift || true
   else
     repo=$(default_read "Git repo URL (SSH, leave empty for static app)" "")
   fi
