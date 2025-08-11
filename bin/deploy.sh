@@ -4,7 +4,7 @@ set -euo pipefail
 # deploy.sh <app_dir> <branch> <compose_file>
 # - Fetches the repo in <app_dir>
 # - Checks out <branch>
-# - Runs docker compose build/up using the provided compose file
+# - Runs docker compose build/up using the app utilities
 
 app_dir=${1:?app directory required}
 branch=${2:?branch required}
@@ -14,53 +14,55 @@ if [[ ! -d "$app_dir" ]]; then
   echo "App directory not found: $app_dir" >&2
   exit 1
 fi
-
-cd "$app_dir"
-
-if [[ ! -d .git ]]; then
-  echo "ERROR: $app_dir is not a git repository"
+if [[ ! -d "$app_dir/.git" ]]; then
+  echo "ERROR: $app_dir is not a git repository" >&2
   exit 2
 fi
 
-# Ensure SSH known_hosts for GitHub
-mkdir -p ~/.ssh
-chmod 700 ~/.ssh
+root_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+app_meta_dir=$(dirname "$compose_file")
+app_env="$app_meta_dir/app.env"
+if [[ ! -f "$app_env" ]]; then
+  echo "Missing app.env at $app_env" >&2
+  exit 3
+fi
+# shellcheck disable=SC1090
+source "$app_env"
+NAME="${NAME:-$(basename "$app_meta_dir")}"
+
+# Ensure SSH known_hosts for GitHub (idempotent)
+mkdir -p ~/.ssh && chmod 700 ~/.ssh
 if ! grep -q "github.com" ~/.ssh/known_hosts 2>/dev/null; then
-  ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts
+  ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null || true
 fi
 
-# Ensure desired branch is checked out
-current_branch=$(git rev-parse --abbrev-ref HEAD || echo "")
+# Ensure correct branch and fetch latest refs using app-git
+"$root_dir/bin/app-git" "$NAME" fetch
+# Switch/track target branch if needed
+current_branch=$(git -C "$app_dir" rev-parse --abbrev-ref HEAD || echo "")
 if [[ "$current_branch" != "$branch" ]]; then
-  git fetch --all --prune
-  git checkout "$branch"
+  "$root_dir/bin/app-git" "$NAME" switch "$branch" || true
 fi
 
-# Always fetch latest refs and detect changes
-git fetch --all --prune
-if ! git diff --quiet HEAD..origin/"$branch"; then
-  echo "Changes detected for $branch. Pulling..."
-  git pull --rebase --autostash origin "$branch"
+# Determine if behind (changes pending)
+status_line=$("$root_dir/bin/app-git" "$NAME" status)
+behind=$(awk -F 'behind=' '{print $2}' <<< "$status_line" | awk '{print $1+0}')
+
+changed=0
+if [[ "${behind:-0}" -gt 0 ]]; then
   changed=1
-else
-  changed=0
+  echo "Changes detected for $branch. Resetting to origin/$branch ..."
+  "$root_dir/bin/app-git" "$NAME" reset-hard || true
 fi
 
-# Build compose command
-compose_cmd=(docker compose)
-# Optional env-file for variable substitution
-if [[ -n "${COMPOSE_ENV_FILE:-}" && -f "$COMPOSE_ENV_FILE" ]]; then
-  compose_cmd+=(--env-file "$COMPOSE_ENV_FILE")
-fi
-compose_cmd+=(-f "$compose_file")
-
+# Build only when changed; always run up -d --remove-orphans
 if [[ $changed -eq 1 ]]; then
   echo "Building images..."
-  "${compose_cmd[@]}" build --pull
+  "$root_dir/bin/app-compose" "$NAME" build --pull
 fi
 
 echo "Starting services..."
-"${compose_cmd[@]}" up -d --remove-orphans
+"$root_dir/bin/app-compose" "$NAME" up -d --remove-orphans
 
 # Optional: clean old images (disabled by default)
 # docker image prune -f

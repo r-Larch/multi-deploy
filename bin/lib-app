@@ -60,12 +60,26 @@ build_compose_cmd() {
   compose_cmd+=(-f "$APP_COMPOSE_FILE")
 }
 
+# --------------- Git helpers ---------------
 ensure_repo() {
-  # Only for git-backed apps
-  if [[ -n "${REPO:-}" && ! -d "$APP_REPO_DIR/.git" ]]; then
-    echo "Cloning repo for app '$NAME' into $APP_REPO_DIR ..."
-    "$INSTALL_DIR/bin/watch-and-deploy.sh" "$REPO" "$NAME" "${BRANCH:-main}" "$COMPOSE_FILE"
+  # Only for git-backed apps; perform a direct clone when missing
+  if [[ -z "${REPO:-}" ]]; then return 0; fi
+  if [[ -d "$APP_REPO_DIR/.git" ]]; then return 0; fi
+  mkdir -p "$APP_REPO_DIR"
+  # Preload GitHub known_host (harmless if StrictHostKeyChecking=no)
+  mkdir -p ~/.ssh; chmod 700 ~/.ssh
+  if ! grep -q "github.com" ~/.ssh/known_hosts 2>/dev/null; then
+    ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null || true
   fi
+  echo "Cloning $REPO into $APP_REPO_DIR"
+  git clone "$REPO" "$APP_REPO_DIR"
+  (
+    cd "$APP_REPO_DIR"
+    local branch="${BRANCH:-main}"
+    if git show-ref --verify --quiet "refs/remotes/origin/${branch}"; then
+      git checkout -B "$branch" --track "origin/${branch}" || git checkout "$branch" || true
+    fi
+  )
 }
 
 # --------------- Status helpers ---------------

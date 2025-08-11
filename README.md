@@ -77,9 +77,16 @@ Remove an app: `app delete <name>`
   - Run raw docker compose subcommands with app context
 - `list`
   - List all apps with auto-deploy status and container status (e.g., `running 2/3` or `stopped`)
-- `detail <name>`
-  - Show app path, type, timer state, list of services, and a summary of `docker compose config`.
-  - If `service` is provided, prints only that service’s rendered config.
+- `detail <name> [service]`
+  - Show app path, type, timer state, list of services, and a summary of `docker compose config`. If `service` is provided, prints only that service’s config.
+
+### Git utility (app-git)
+
+- `app-git <name> status` — prints branch, commit, ahead/behind
+- `app-git <name> fetch`
+- `app-git <name> pull` — fetch + hard reset to origin/BRANCH-NAME
+- `app-git <name> reset-hard` — hard reset to origin/BRANCH-NAME
+- `app-git <name> switch BRANCH-NAME` — track and switch to origin/BRANCH-NAME
 
 Examples:
 
@@ -124,6 +131,7 @@ app list
   - `compose.yml`                     Stack file that includes repo compose and server override
   - `compose.server.yml`              Server override (joins `web`, adds `traefik.enable=true`)
 - `/opt/multi-deploy/bin/`            Scripts: `app`, `app-compose`, `app-git`, `app-deploy`, `deploy.sh`, `watch-and-deploy.sh`
+  - All scripts share helpers via `bin/lib-app` and delegate to `app-*` utilities to avoid duplication.
 - `/opt/multi-deploy/etc/systemd/`    Unit and timer templates
 
 ## Requirements

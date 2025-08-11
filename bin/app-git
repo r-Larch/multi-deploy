@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # app-git <name> <action>
-# Actions: status, pull, fetch, reset-hard
+# Actions: status, pull, fetch, reset-hard, switch
 
 INSTALL_DIR=${INSTALL_DIR:-/opt/multi-deploy}
 APPS_DIR="${INSTALL_DIR}/apps"
@@ -13,7 +13,7 @@ source "$INSTALL_DIR/bin/lib-app" || { echo "Missing $INSTALL_DIR/bin/lib-app" >
 
 name=${1:-}
 action=${2:-}
-if [[ -z "$name" || -z "$action" ]]; then echo "Usage: $(basename "$0") <name> <status|pull|fetch|reset-hard>" >&2; exit 1; fi
+if [[ -z "$name" || -z "$action" ]]; then echo "Usage: $(basename "$0") <name> <status|pull|fetch|reset-hard|switch> [branch]" >&2; exit 1; fi
 
 load_app "$name"
 cd "$APP_REPO_DIR"
@@ -37,6 +37,17 @@ case "$action" in
   reset-hard)
     current_branch=$(git rev-parse --abbrev-ref HEAD || true)
     git reset --hard "origin/${current_branch}"
+    ;;
+  switch)
+    target_branch=${3:-}
+    if [[ -z "$target_branch" ]]; then echo "Usage: $(basename "$0") $name switch <branch>" >&2; exit 1; fi
+    git fetch --all --prune
+    if git show-ref --verify --quiet "refs/remotes/origin/${target_branch}"; then
+      git checkout -B "$target_branch" --track "origin/${target_branch}" || git checkout "$target_branch"
+      git reset --hard "origin/${target_branch}" || true
+    else
+      echo "Branch '$target_branch' not found on origin" >&2; exit 2
+    fi
     ;;
   *) echo "Unknown action: $action" >&2; exit 1 ;;
 esac
