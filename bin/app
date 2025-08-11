@@ -2,8 +2,6 @@
 # Multi-deploy app manager
 # Usage:
 #   app create [name]      # interactive app setup (name optional)
-#   app enable <name>      # enable & start systemd timer
-#   app disable <name>     # disable & stop systemd timer
 #   app delete <name>      # disable timer and delete app
 #   app update <name>      # git fetch/pull if changed, then up (no forced rebuild)
 #   app deploy <name>      # build & up (force deploy)
@@ -140,6 +138,21 @@ cmd_create() {
       echo "Repo already present at $repo_dir. Fetching updates..."
       (cd "$repo_dir" && git fetch --all --prune)
     else
+      # Helpful: show deploy key if using SSH
+      if [[ "$repo" =~ ^(git@|ssh://) ]]; then
+        if [[ -f /root/.ssh/id_ed25519.pub ]]; then
+          bold "Deploy key (add to your Git hosting as read-only):"
+          cat /root/.ssh/id_ed25519.pub
+          echo
+          read -r -p "Press Enter to continue with git clone..." || true
+        else
+          echo "No SSH key found at /root/.ssh/id_ed25519.pub. Generate with:"
+          echo "  ssh-keygen -t ed25519 -f /root/.ssh/id_ed25519 -N ''"
+          echo
+          read -r -p "Press Enter to continue with git clone..." || true
+        fi
+      fi
+
       echo "Cloning $repo into $repo_dir ..."
       mkdir -p "$repo_dir"
       git clone "$repo" "$repo_dir"
@@ -254,40 +267,12 @@ EOF
   if [[ -n "$repo" ]]; then
     echo "- cd $repo_dir"
     echo "- Configure your app if required (env, secrets, migrations, etc.)"
-    echo "- Then enable deployments: $(basename "$0") enable $name"
-    # Helpful: show deploy key if using SSH
-    if [[ "$repo" =~ ^(git@|ssh://) ]]; then
-      if [[ -f /root/.ssh/id_ed25519.pub ]]; then
-        bold "Deploy key (add to your Git hosting as read-only):"
-        cat /root/.ssh/id_ed25519.pub
-      else
-        echo "No SSH key found at /root/.ssh/id_ed25519.pub. Generate with:"
-        echo "  ssh-keygen -t ed25519 -f /root/.ssh/id_ed25519 -N ''"
-      fi
-    fi
+    echo "- Then enable deployments: $(basename "$0") timers $name on"
   else
     echo "- Edit $override_path and add your service under services:"
   fi
 
   bold "Done. App '$name' created."
-}
-
-cmd_enable() {
-  local name=${1:-}; [[ -n "$name" ]] || { red "Usage: $(basename "$0") enable <name>"; exit 1; }
-  load_app "$name"
-  if [[ -z "${REPO:-}" ]]; then red "Static apps do not support timers"; exit 1; fi
-  systemctl daemon-reload || true
-  systemctl enable --now "multi-deploy@${NAME}.timer"
-  echo "Timer enabled for $NAME"
-}
-
-cmd_disable() {
-  local name=${1:-}; [[ -n "$name" ]] || { red "Usage: $(basename "$0") disable <name>"; exit 1; }
-  load_app "$name"
-  if systemctl is-enabled "multi-deploy@${NAME}.timer" >/dev/null 2>&1; then
-    systemctl disable --now "multi-deploy@${NAME}.timer" || true
-  fi
-  echo "Timer disabled for $NAME"
 }
 
 cmd_delete() { cmd_remove "$@"; }
@@ -311,6 +296,7 @@ cmd_deploy() { local n=${1:-}; [[ -n "$n" ]] || { red "Usage: $(basename "$0") d
 cmd_up() { local n=${1:-}; [[ -z "$n" ]] && { red "Usage: $(basename "$0") up <name>"; exit 1; }; "$INSTALL_DIR/bin/app-compose" "$n" up -d; }
 cmd_down() { local n=${1:-}; [[ -z "$n" ]] && { red "Usage: $(basename "$0") down <name>"; exit 1; }; "$INSTALL_DIR/bin/app-compose" "$n" down; }
 cmd_pull() { local n=${1:-}; [[ -z "$n" ]] && { red "Usage: $(basename "$0") pull <name>"; exit 1; }; "$INSTALL_DIR/bin/app-git" "$n" pull; }
+cmd_git() { local n=${1:-}; shift || true; [[ -z "$n" ]] && { red "Usage: $(basename "$0") git <name> <git-command>"; exit 1; }; "$INSTALL_DIR/bin/app-git" "$n" "$@"; }
 cmd_run() { local n=${1:-}; shift || true; [[ -z "$n" ]] && { red "Usage: $(basename "$0") run <name> <compose-args...>"; exit 1; }; "$INSTALL_DIR/bin/app-compose" "$n" "$@"; }
 cmd_shell() { local n=${1:-}; local svc=${2:-}; [[ -z "$n" || -z "$svc" ]] && { red "Usage: $(basename "$0") shell <name> <service>"; exit 1; }; "$INSTALL_DIR/bin/app-compose" "$n" exec -it "$svc" sh; }
 
@@ -423,8 +409,6 @@ usage() {
   cat <<USAGE
 Usage:
   $(basename "$0") create [name]     # interactive app setup
-  $(basename "$0") enable <name>     # enable & start systemd timer
-  $(basename "$0") disable <name>    # disable & stop systemd timer
   $(basename "$0") delete <name>     # disable timer and delete app
   $(basename "$0") timers <name> [on|off] # get/set timer state
   $(basename "$0") update <name>     # git fetch/pull if changed, then up
@@ -436,6 +420,7 @@ Usage:
   $(basename "$0") list              # list apps and status
   $(basename "$0") detail <name> [service] # show detailed app info
   $(basename "$0") pull <name>       # only git fetch/reset to origin/<branch>
+  $(basename "$0") git <name> <cmd>  # run git commands in app context
   $(basename "$0") shell <name> <svc># open shell in running container
   $(basename "$0") run <name> ...    # run raw docker compose args
 USAGE
@@ -445,8 +430,6 @@ main() {
   local cmd=${1:-}
   case "$cmd" in
     create) shift || true; cmd_create "$@" ;;
-    enable) shift || true; cmd_enable "$@" ;;
-    disable) shift || true; cmd_disable "$@" ;;
     remove|delete) shift || true; cmd_delete "$@" ;;
     timers) shift || true; cmd_timers "$@" ;;
     update) shift || true; cmd_update "$@" ;;
@@ -458,6 +441,7 @@ main() {
     list)   shift || true; cmd_list "$@" ;;
     detail) shift || true; cmd_detail "$@" ;;
     pull)   shift || true; cmd_pull "$@" ;;
+    git)    shift || true; cmd_git "$@" ;;
     shell)  shift || true; cmd_shell "$@" ;;
     run)    shift || true; cmd_run "$@" ;;
     -h|--help|help|"") usage ;;
