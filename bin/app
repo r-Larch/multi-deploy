@@ -326,6 +326,47 @@ cmd_logs() {
   fi
 }
 
+cmd_ci_logs() {
+  local name=${1:-}
+  [[ -n "$name" ]] || { red "Usage: $(basename "$0") ci-logs <name>"; exit 1; }
+  load_app "$name"
+  local log_dir="$APP_META_DIR/logs"
+  mkdir -p "$log_dir"
+  bold "Streaming deploy logs for '$name' (Ctrl-C to exit)"
+  echo "Log directory: $log_dir"
+  local last_file="" tail_pid=""
+  # Clean up background tail on exit
+  trap '[[ -n ${tail_pid:-} ]] && kill "$tail_pid" 2>/dev/null || true' EXIT INT TERM
+  while true; do
+    # Find newest log file
+    local newest=""
+    newest=$(ls -1t "$log_dir"/*.log 2>/dev/null | head -n1 || true)
+    if [[ -z "$newest" ]]; then
+      printf '[%s] Waiting for first log file...\n' "$(date -Is)"
+      sleep 2
+      continue
+    fi
+    if [[ "$newest" != "$last_file" ]]; then
+      # Switch to new file
+      if [[ -n "$tail_pid" ]]; then
+        kill "$tail_pid" 2>/dev/null || true
+        wait "$tail_pid" 2>/dev/null || true
+        echo
+      fi
+      if [[ -z "$last_file" ]]; then
+        echo "Current log: $(basename "$newest")"
+      else
+        echo "---- Switched to new log: $(basename "$newest") ----"
+      fi
+      last_file="$newest"
+      # Tail from beginning for context; could change to -n 200 if too verbose
+      tail -n +1 -F "$newest" &
+      tail_pid=$!
+    fi
+    sleep 2
+  done
+}
+
 cmd_list() {
   ensure_dirs
   printf "%-20s %-8s %-14s\n" "NAME" "TIMER" "STATUS"
@@ -421,6 +462,7 @@ Usage:
   $(basename "$0") down <name>       # compose down
   $(basename "$0") restart <name>    # compose restart
   $(basename "$0") logs <name> [svc] # compose logs
+  $(basename "$0") ci-logs <name>    # stream deploy logs (auto-rollover)
   $(basename "$0") list              # list apps and status
   $(basename "$0") detail <name> [service] # show detailed app info
   $(basename "$0") pull <name>       # only git fetch/reset to origin/<branch>
@@ -442,6 +484,7 @@ main() {
     down)   shift || true; cmd_down "$@" ;;
     restart)shift || true; cmd_restart "$@" ;;
     logs)   shift || true; cmd_logs "$@" ;;
+  ci-logs)shift || true; cmd_ci_logs "$@" ;;
     list)   shift || true; cmd_list "$@" ;;
     detail) shift || true; cmd_detail "$@" ;;
     pull)   shift || true; cmd_pull "$@" ;;
