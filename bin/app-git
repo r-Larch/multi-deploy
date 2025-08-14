@@ -22,7 +22,10 @@ case "$action" in
   status)
     current_branch=$(git rev-parse --abbrev-ref HEAD || true)
     git fetch --all --prune >/dev/null 2>&1 || true
-    read ahead behind < <(git rev-list --left-right --count "origin/${current_branch}...${current_branch}" 2>/dev/null | awk '{print $1, $2}')
+    # rev-list --left-right --count origin/branch...branch outputs: <behind> <ahead>
+    counts=$(git rev-list --left-right --count "origin/${current_branch}...${current_branch}" 2>/dev/null || echo "0	0")
+    behind=$(echo "$counts" | awk '{print $1}')
+    ahead=$(echo "$counts" | awk '{print $2}')
     head=$(git rev-parse --short HEAD || true)
     echo "branch=${current_branch} commit=${head} ahead=${ahead:-0} behind=${behind:-0}"
     ;;

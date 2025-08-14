@@ -380,12 +380,10 @@ cmd_detail() {
   echo "App directory: $APP_META_DIR"
   echo "Type: $type  Timers: $timers"
   if [[ "$type" == git ]]; then
-    local branch head ahead behind
-    branch=$(git -C "$APP_REPO_DIR" rev-parse --abbrev-ref HEAD || true)
-    head=$(git -C "$APP_REPO_DIR" rev-parse --short HEAD || true)
-    git -C "$APP_REPO_DIR" fetch --all --prune >/dev/null 2>&1 || true
-    read ahead behind < <(git -C "$APP_REPO_DIR" rev-list --left-right --count "origin/${branch}...${branch}" 2>/dev/null | awk '{print $1, $2}')
-    echo "Git: branch=$branch commit=$head ahead=${ahead:-0} behind=${behind:-0}"
+    # Reuse centralized git status logic (app-git) to avoid drift
+    local git_status
+    git_status=$("$INSTALL_DIR/bin/app-git" "$name" status 2>/dev/null || true)
+    [[ -n "$git_status" ]] && echo "Git: $git_status" || echo "Git: (unavailable)"
   fi
   echo
   if [[ -z "$svc" ]]; then
