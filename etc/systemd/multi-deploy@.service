@@ -7,7 +7,7 @@ Wants=network-online.target docker.service
 Type=oneshot
 User=root
 WorkingDirectory=/opt/multi-deploy
-Environment=GIT_SSH_COMMAND=/usr/bin/ssh -i /root/.ssh/id_ed25519 -o IdentitiesOnly=yes
+Environment=GIT_SSH_COMMAND=/usr/bin/ssh -i ${APP_SSH_DIR}/id_ed25519 -o IdentitiesOnly=yes
 EnvironmentFile=/opt/multi-deploy/apps/%i/app.env
 ExecStart=/usr/bin/env bash -lc '/opt/multi-deploy/bin/watch-and-deploy.sh ${REPO} ${NAME} ${BRANCH} ${COMPOSE_FILE}'
 

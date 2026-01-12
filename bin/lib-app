@@ -42,9 +42,14 @@ load_app() {
   APP_META_DIR="$APPS_DIR/$name"
   APP_ENV="$APP_META_DIR/app.env"
   APP_REPO_DIR="$APP_META_DIR/code"
+  APP_SSH_DIR="$APP_META_DIR/.ssh"
   if [[ ! -f "$APP_ENV" ]]; then red "Missing $APP_ENV"; exit 1; fi
+  if [[ ! -d "$APP_SSH_DIR" ]]; then APP_SSH_DIR="/root/.ssh"; fi
   # shellcheck disable=SC1090
   source "$APP_ENV"
+  GIT_SSH_COMMAND="/usr/bin/ssh -i ${APP_SSH_DIR}/id_ed25519 -o IdentitiesOnly=yes"
+  export GIT_SSH_COMMAND
+
   # Allow NAME to be set from env file; fallback to provided name
   NAME="${NAME:-$name}"
   if [[ -z "${COMPOSE_FILE:-}" ]]; then red "COMPOSE_FILE not set in $APP_ENV"; exit 1; fi
@@ -110,4 +115,16 @@ print_compose_status() {
   else
     echo "running ${running}/${total}"
   fi
+}
+
+ensure_app_ssh_key() {
+  APP_SSH_DIR="$1"
+  SSH_KEY_PATH="$APP_SSH_DIR/id_ed25519"
+  if [[ ! -f "$SSH_KEY_PATH" ]]; then
+    mkdir -p "$APP_SSH_DIR"
+    ssh-keygen -t ed25519 -N "" -f "$SSH_KEY_PATH"
+    echo "Generated SSH key: $SSH_KEY_PATH.pub"
+  fi
+  GIT_SSH_COMMAND="/usr/bin/ssh -i ${APP_SSH_DIR}/id_ed25519 -o IdentitiesOnly=yes"
+  export GIT_SSH_COMMAND
 }

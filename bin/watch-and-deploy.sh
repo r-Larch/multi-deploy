@@ -11,6 +11,7 @@ compose_file=${4:?compose file required}
 
 root_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 app_meta_dir="$root_dir/apps/$name"
+app_ssh_dir="$app_meta_dir/.ssh"
 app_repo_dir="$app_meta_dir/code"
 
 # Logging (keep 7 days)
