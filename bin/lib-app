@@ -58,6 +58,7 @@ load_app() {
 
 build_compose_cmd() {
   compose_cmd=(docker compose)
+  compose_cmd+=(--project-name "$NAME")
   # Optional env-file for variable substitution
   if [[ -n "${COMPOSE_ENV_FILE:-}" && -f "$COMPOSE_ENV_FILE" ]]; then
     compose_cmd+=(--env-file "$COMPOSE_ENV_FILE")

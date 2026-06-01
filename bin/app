@@ -89,6 +89,7 @@ load_app() {
 
 build_compose_cmd() {
   compose_cmd=(docker compose)
+  compose_cmd+=(--project-name "$NAME")
   compose_cmd+=(-f "$APP_COMPOSE_FILE")
 }
 
