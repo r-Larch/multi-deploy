@@ -2,7 +2,7 @@ name: traefik
 
 services:
   traefik:
-    image: traefik:v3.2
+    image: traefik:v3.7.5
     container_name: traefik
     restart: always
     command:
@@ -14,6 +14,11 @@ services:
       - .env
     environment:
       - TRAEFIK_CERTIFICATESRESOLVERS_LETSENCRYPT_ACME_EMAIL=${TRAEFIK_ACME_EMAIL}
+      # Pin the Docker API version: a recent Docker Engine raised its minimum
+      # supported API version above the client's negotiation fallback (1.24),
+      # so the docker provider errored with "client version 1.24 is too old".
+      # 1.44 (Engine 27) is accepted by the daemon and supported by Traefik's client.
+      - DOCKER_API_VERSION=${DOCKER_API_VERSION:-1.44}
     ports:
       - "80:80"
       - "443:443"
