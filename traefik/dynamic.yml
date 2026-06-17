@@ -1,0 +1,19 @@
+# Traefik DYNAMIC configuration, served by the file provider (providers.file in
+# traefik.yml). Middlewares/routers/services defined here are addressable with the
+# `@file` provider suffix — e.g. apps reference `security-headers@file` in their
+# Docker labels. Hot-reloaded on change (watch: true); no Traefik restart needed.
+http:
+  middlewares:
+    security-headers:
+      headers:
+        hostsProxyHeaders:
+          - "X-Forwarded-Host"
+        referrerPolicy: "same-origin"
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+        stsPreload: true
+        forceSTSHeader: true
+        # Headers for WebSocket and SSE support
+        customResponseHeaders:
+          X-Frame-Options: "SAMEORIGIN"
+          X-Content-Type-Options: "nosniff"

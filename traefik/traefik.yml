@@ -5,6 +5,12 @@ api:
 providers:
   docker:
     exposedByDefault: false
+  # Dynamic config (middlewares, routers referenced as `…@file`) lives here.
+  # Static traefik.yml has no top-level `http:` key — dynamic config MUST come
+  # from a provider, so `security-headers@file` is defined in dynamic.yml.
+  file:
+    filename: /etc/traefik/dynamic.yml
+    watch: true
 
 entryPoints:
   web:
@@ -18,22 +24,6 @@ certificatesResolvers:
       # Email is configured via environment variable mapping in docker-compose.yml
       storage: /letsencrypt/acme.json
       tlsChallenge: {}
-
-http:
-  middlewares:
-    security-headers:
-      headers:
-        hostsProxyHeaders:
-          - "X-Forwarded-Host"
-        referrerPolicy: "same-origin"
-        stsSeconds: 31536000
-        stsIncludeSubdomains: true
-        stsPreload: true
-        forceSTSHeader: true
-        # Headers for WebSocket and SSE support
-        customResponseHeaders:
-          X-Frame-Options: "SAMEORIGIN"
-          X-Content-Type-Options: "nosniff"
 
 serversTransport:
   forwardingTimeouts:
