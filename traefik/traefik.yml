@@ -23,7 +23,12 @@ certificatesResolvers:
     acme:
       # Email is configured via environment variable mapping in docker-compose.yml
       storage: /letsencrypt/acme.json
-      tlsChallenge: {}
+      # HTTP-01 over the `web` (:80) entrypoint. Single non-proxied server: Traefik
+      # owns 80/443 directly and serves /.well-known/acme-challenge/ before any
+      # per-app HTTP→HTTPS redirect. (TLS-ALPN-01 failed to negotiate acme-tls/1
+      # in this environment; HTTP-01 has fewer moving parts and is reliable here.)
+      httpChallenge:
+        entryPoint: web
 
 serversTransport:
   forwardingTimeouts:
