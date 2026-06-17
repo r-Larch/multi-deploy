@@ -24,7 +24,7 @@ Key principle: git-status logic lives only in `app-git`, and compose invocation 
 
 ### Per-app layout on the server (`/opt/multi-deploy/apps/<name>/`)
 
-- `app.env` — generated config sourced by every command. Keys: `NAME`, `REPO`, `BRANCH`, `COMPOSE_FILE` (always `compose.yml`), optional `COMPOSE_ENV_FILE`. **An empty/absent `REPO` means a "static app"** — no git, no timer; many commands branch on `[[ -z "${REPO:-}" ]]`.
+- `app.env` — generated config sourced by every command. Keys: `NAME`, `REPO`, `BRANCH`, `COMPOSE_FILE` (always `compose.yml`), optional `ENV_FILE` (path to a compose `--env-file`, relative to the app dir, e.g. `ENV_FILE=.env`; its variables are used for `${VAR}` substitution across the merged compose config — `COMPOSE_ENV_FILE` is the deprecated alias). **An empty/absent `REPO` means a "static app"** — no git, no timer; many commands branch on `[[ -z "${REPO:-}" ]]`.
 - `compose.yml` — generated stack file using compose `include:` to merge the repo's compose file (`code/<file>`) with the server override.
 - `compose.server.yml` — server-side override: attaches the chosen service to the external `web` network and adds Traefik labels. This is where domain/router config is hand-edited; the repo's own compose stays untouched.
 - `code/` — the cloned app git repo.

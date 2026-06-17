@@ -87,12 +87,6 @@ load_app() {
   APP_COMPOSE_FILE="$APP_META_DIR/$COMPOSE_FILE"
 }
 
-build_compose_cmd() {
-  compose_cmd=(docker compose)
-  compose_cmd+=(--project-name "$NAME")
-  compose_cmd+=(-f "$APP_COMPOSE_FILE")
-}
-
 ensure_repo() {
   # Clone if repo missing, using existing watch-and-deploy logic
   if [[ ! -d "$APP_REPO_DIR/.git" ]]; then
@@ -199,6 +193,9 @@ cmd_create() {
     [[ -n "$repo" ]] && echo "REPO=$repo"
     [[ -n "$branch" ]] && echo "BRANCH=$branch"
     echo "COMPOSE_FILE=compose.yml"
+    echo "# Optional: compose --env-file for \${VAR} substitution in the stack."
+    echo "# Path is relative to this app dir; create the file before enabling."
+    echo "#ENV_FILE=.env"
   } > "$env_path"
 
   # compose.yml

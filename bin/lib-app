@@ -59,9 +59,17 @@ load_app() {
 build_compose_cmd() {
   compose_cmd=(docker compose)
   compose_cmd+=(--project-name "$NAME")
-  # Optional env-file for variable substitution
-  if [[ -n "${COMPOSE_ENV_FILE:-}" && -f "$COMPOSE_ENV_FILE" ]]; then
-    compose_cmd+=(--env-file "$COMPOSE_ENV_FILE")
+  # Optional env-file: variables are used for ${VAR} substitution across the
+  # whole compose config. ENV_FILE (relative to the app dir, e.g. ENV_FILE=.env)
+  # is the documented key; COMPOSE_ENV_FILE is kept for backward compatibility.
+  local env_file="${ENV_FILE:-${COMPOSE_ENV_FILE:-}}"
+  if [[ -n "$env_file" ]]; then
+    [[ "$env_file" = /* ]] || env_file="$APP_META_DIR/$env_file"
+    if [[ -f "$env_file" ]]; then
+      compose_cmd+=(--env-file "$env_file")
+    else
+      red "ENV_FILE set but not found: $env_file" >&2
+    fi
   fi
   compose_cmd+=(-f "$APP_COMPOSE_FILE")
 }
