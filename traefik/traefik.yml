@@ -1,6 +1,16 @@
 # Global Traefik configuration for multi-app hosting
-api: 
+api:
   dashboard: true
+
+# Per-request access log → stdout (visible via `docker compose logs traefik`).
+# format: common (CLF text) or json. Logs every request by default; to log only
+# a subset add a `filters:` block (a request is kept if it matches ANY filter):
+#   filters:
+#     statusCodes: ["400-599"]   # only errors
+#     retryAttempts: true
+#     minDuration: "100ms"       # only slow requests
+accessLog:
+  format: common
 
 providers:
   docker:
