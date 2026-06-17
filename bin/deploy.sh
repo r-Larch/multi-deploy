@@ -55,14 +55,19 @@ if [[ "${behind:-0}" -gt 0 ]]; then
   "$root_dir/bin/app-git" "$NAME" reset-hard || true
 fi
 
-# Build only when changed; always run up -d --remove-orphans
+# Only touch containers when the repo actually changed. Crash/reboot recovery is
+# handled by each service's Docker restart policy (restart: unless-stopped), not by
+# this poller — so a no-change tick is just `git fetch` above and exits. This avoids
+# needlessly re-running one-shot services (e.g. migrate) on every 60s timer tick.
+# First-time bring-up is done by the manual `app deploy` path, which always ups.
 if [[ $changed -eq 1 ]]; then
   echo "Building images..."
   "$root_dir/bin/app-compose" "$NAME" build --pull
+  echo "Starting services..."
+  "$root_dir/bin/app-compose" "$NAME" up -d --remove-orphans
+else
+  echo "No changes; leaving running services as-is."
 fi
-
-echo "Starting services..."
-"$root_dir/bin/app-compose" "$NAME" up -d --remove-orphans
 
 # Optional: clean old images (disabled by default)
 # docker image prune -f
