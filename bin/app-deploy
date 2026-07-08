@@ -23,6 +23,12 @@ case "$action" in
     ;;
   deploy)
     build_compose_cmd
+    # Same commit stamp as deploy.sh: apps may consume GIT_SHA as a build arg.
+    if [[ -d "$APP_REPO_DIR/.git" ]]; then
+      GIT_SHA=$(git -C "$APP_REPO_DIR" rev-parse HEAD 2>/dev/null || echo unknown)
+      export GIT_SHA
+      echo "Deploying GIT_SHA=$GIT_SHA"
+    fi
     "${compose_cmd[@]}" build --pull
     "${compose_cmd[@]}" up -d --remove-orphans
     ;;

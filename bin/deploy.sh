@@ -61,7 +61,13 @@ fi
 # needlessly re-running one-shot services (e.g. migrate) on every 60s timer tick.
 # First-time bring-up is done by the manual `app deploy` path, which always ups.
 if [[ $changed -eq 1 ]]; then
-  echo "Building images..."
+  # Stamp the build with the exact commit being deployed. Apps may consume it as
+  # a compose build arg (e.g. `GIT_SHA: ${GIT_SHA:-unknown}`) and surface it from
+  # a /status endpoint, so "which commit is prod running" is verifiable. Process
+  # env wins over --env-file values in compose ${VAR} interpolation.
+  GIT_SHA=$(git -C "$app_dir" rev-parse HEAD 2>/dev/null || echo unknown)
+  export GIT_SHA
+  echo "Building images... (GIT_SHA=$GIT_SHA)"
   "$root_dir/bin/app-compose" "$NAME" build --pull
   echo "Starting services..."
   "$root_dir/bin/app-compose" "$NAME" up -d --remove-orphans
