@@ -143,7 +143,12 @@ fi
 # --- Install systemd units ---
 cp "$INSTALL_DIR/etc/systemd/multi-deploy@.service" /etc/systemd/system/
 cp "$INSTALL_DIR/etc/systemd/multi-deploy@.timer" /etc/systemd/system/
+cp "$INSTALL_DIR/etc/systemd/docker-prune.service" /etc/systemd/system/
+cp "$INSTALL_DIR/etc/systemd/docker-prune.timer" /etc/systemd/system/
 systemctl daemon-reload
+
+# Daily prune backstop (deploys also prune inline; see bin/docker-prune.sh)
+systemctl enable --now docker-prune.timer || true
 
 # --- Add PATH for convenience ---
 echo 'export PATH="/opt/multi-deploy/bin:$PATH"' > /etc/profile.d/multi-deploy-path.sh

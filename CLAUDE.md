@@ -19,6 +19,7 @@ The CLI is layered. `bin/app` is the user-facing dispatcher; it delegates to sma
 - **`bin/app-deploy <name> <update|deploy>`** — `deploy` = `build --pull` + `up -d --remove-orphans`; `update` delegates to `watch-and-deploy.sh`.
 - **`bin/watch-and-deploy.sh`** — the unit of work systemd runs each minute. Clones repo if missing, logs to `apps/<name>/logs/<timestamp>.log` (tee'd, rotated after 7 days), calls `deploy.sh`.
 - **`bin/deploy.sh`** — change-detection: only `build --pull` when the repo is *behind* origin (parsed from `app-git status`); always runs `up -d --remove-orphans`.
+- **`bin/docker-prune.sh`** — disk reclaim. Age-gated (`--days`, default 5) prune of unreferenced images, exited containers, buildx cache and unused networks; `flock`-serialised so the per-app timers don't stampede. Volumes only with explicit `--volumes`. Runs after every successful deploy (both `deploy.sh` and `app-deploy deploy`), plus a daily `docker-prune.timer` backstop; also exposed as `app prune`.
 
 Key principle: git-status logic lives only in `app-git`, and compose invocation lives only in `app-compose`/`build_compose_cmd`. When changing behavior, edit the single owner rather than duplicating — `app detail` and `deploy.sh` deliberately call back into `app-git`/`app-compose` to avoid drift.
 

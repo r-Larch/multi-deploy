@@ -1,0 +1,13 @@
+[Unit]
+Description=Daily Docker prune backstop for multi-deploy
+
+[Timer]
+# Deploys prune as they go; this catches hosts that sit idle for days and
+# still accumulate cruft (pulled images, stopped one-shot containers).
+OnCalendar=daily
+RandomizedDelaySec=30m
+Persistent=true
+Unit=docker-prune.service
+
+[Install]
+WantedBy=timers.target

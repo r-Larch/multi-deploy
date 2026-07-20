@@ -31,6 +31,8 @@ case "$action" in
     fi
     "${compose_cmd[@]}" build --pull
     "${compose_cmd[@]}" up -d --remove-orphans
+    # Same post-deploy reclaim as the automated path (bin/deploy.sh).
+    "$INSTALL_DIR/bin/docker-prune.sh" || true
     ;;
   *) echo "Unknown action: $action" >&2; exit 1 ;;
 esac

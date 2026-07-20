@@ -299,6 +299,7 @@ cmd_up() { local n=${1:-}; [[ -z "$n" ]] && { red "Usage: $(basename "$0") up <n
 cmd_down() { local n=${1:-}; [[ -z "$n" ]] && { red "Usage: $(basename "$0") down <name>"; exit 1; }; "$INSTALL_DIR/bin/app-compose" "$n" down; }
 cmd_pull() { local n=${1:-}; [[ -z "$n" ]] && { red "Usage: $(basename "$0") pull <name>"; exit 1; }; "$INSTALL_DIR/bin/app-git" "$n" pull; }
 cmd_git() { local n=${1:-}; shift || true; [[ -z "$n" ]] && { red "Usage: $(basename "$0") git <name> <git-command>"; exit 1; }; "$INSTALL_DIR/bin/app-git" "$n" "$@"; }
+cmd_prune() { "$INSTALL_DIR/bin/docker-prune.sh" "$@"; }
 cmd_run() { local n=${1:-}; shift || true; [[ -z "$n" ]] && { red "Usage: $(basename "$0") run <name> <compose-args...>"; exit 1; }; "$INSTALL_DIR/bin/app-compose" "$n" "$@"; }
 cmd_shell() { local n=${1:-}; local svc=${2:-}; [[ -z "$n" || -z "$svc" ]] && { red "Usage: $(basename "$0") shell <name> <service>"; exit 1; }; "$INSTALL_DIR/bin/app-compose" "$n" exec -it "$svc" sh; }
 
@@ -465,6 +466,7 @@ Usage:
   $(basename "$0") git <name> <cmd>  # run git commands in app context
   $(basename "$0") shell <name> <svc># open shell in running container
   $(basename "$0") run <name> ...    # run raw docker compose args
+  $(basename "$0") prune [--days N] [--volumes] # reclaim unused docker data (default: older than 5d)
 USAGE
 }
 
@@ -487,6 +489,7 @@ main() {
     git)    shift || true; cmd_git "$@" ;;
     shell)  shift || true; cmd_shell "$@" ;;
     run)    shift || true; cmd_run "$@" ;;
+    prune)  shift || true; cmd_prune "$@" ;;
     -h|--help|help|"") usage ;;
     *) red "Unknown command: $cmd"; echo; usage; exit 1 ;;
   esac

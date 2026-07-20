@@ -71,9 +71,10 @@ if [[ $changed -eq 1 ]]; then
   "$root_dir/bin/app-compose" "$NAME" build --pull
   echo "Starting services..."
   "$root_dir/bin/app-compose" "$NAME" up -d --remove-orphans
+  # Every `build --pull` leaves the previous image and its build cache behind;
+  # on a 1-min poll that grows unbounded. Reclaim right after the new stack is
+  # up, so the images we just replaced are the ones eligible once they age out.
+  "$root_dir/bin/docker-prune.sh" || true
 else
   echo "No changes; leaving running services as-is."
 fi
-
-# Optional: clean old images (disabled by default)
-# docker image prune -f
