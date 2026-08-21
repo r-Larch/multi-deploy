@@ -274,6 +274,17 @@ sudo nano /opt/multi-deploy/apps/myapp/app.env
 sudo app restart myapp
 ```
 
+### Build Concurrency
+
+Compose builds/pulls are serialised (`COMPOSE_PARALLEL_LIMIT=1`) so that parallel
+BuildKit builds — across services and across apps whose 1-minute timers happen to
+fire together — can't starve the host of CPU/RAM. To let a specific app build more
+than one service at a time, set it in that app's `app.env`:
+
+```bash
+COMPOSE_PARALLEL_LIMIT=4
+```
+
 ### Branch Deployments
 
 Deploy different branches for staging/testing:

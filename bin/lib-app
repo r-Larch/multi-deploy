@@ -6,6 +6,18 @@ set -euo pipefail
 INSTALL_DIR=${INSTALL_DIR:-/opt/multi-deploy}
 APPS_DIR="${INSTALL_DIR}/apps"
 
+# --------------- Compose tuning ---------------
+# Serialise compose work: build one service at a time instead of all of them at
+# once. Concurrent BuildKit builds on a single small host (many apps, 1-min poll
+# timers) fight over CPU/IO and can OOM the box mid-deploy; one at a time is a
+# little slower but predictable. Compose applies this limit to `build` as well as
+# pull/up (docker/compose#9091, docker/compose#10133).
+# Exported here — before load_app sources apps/<name>/app.env — so an app may
+# raise it for itself with COMPOSE_PARALLEL_LIMIT=<n> in its app.env, and the
+# systemd EnvironmentFile / an ad-hoc `COMPOSE_PARALLEL_LIMIT=4 app deploy x`
+# also win.
+export COMPOSE_PARALLEL_LIMIT="${COMPOSE_PARALLEL_LIMIT:-1}"
+
 # --------------- UX helpers ---------------
 bold() { echo -e "\e[1m$*\e[0m"; }
 red() { echo -e "\e[31m$*\e[0m"; }

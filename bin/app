@@ -196,6 +196,9 @@ cmd_create() {
     echo "# Optional: compose --env-file for \${VAR} substitution in the stack."
     echo "# Path is relative to this app dir; create the file before enabling."
     echo "#ENV_FILE=.env"
+    echo "# Optional: how many services compose builds/pulls at once."
+    echo "# Defaults to 1 (serialised) so parallel builds can't starve the host."
+    echo "#COMPOSE_PARALLEL_LIMIT=1"
   } > "$env_path"
 
   # compose.yml
