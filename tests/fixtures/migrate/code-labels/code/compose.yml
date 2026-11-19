@@ -1,0 +1,21 @@
+# Stub of an app repo whose compose carries its own Traefik labels.
+services:
+  app:
+    image: python:3.13-alpine
+    networks:
+      - web
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.code-labels.rule=Host(`code.example-k.test`)"
+      - "traefik.http.routers.code-labels.entrypoints=websecure"
+      - "traefik.http.routers.code-labels.tls.certresolver=letsencrypt"
+      - "traefik.http.services.code-labels.loadbalancer.server.port=8080"
+      - "traefik.http.routers.code-labels-http.rule=Host(`code.example-k.test`)"
+      - "traefik.http.routers.code-labels-http.entrypoints=web"
+      - "traefik.http.routers.code-labels-http.middlewares=code-labels-https"
+      - "traefik.http.middlewares.code-labels-https.redirectscheme.scheme=https"
+
+networks:
+  web:
+    external: true
+    name: web

@@ -1,0 +1,19 @@
+# Hand-written stack of a static app: no repo, no include.
+name: static-labels
+
+services:
+  site:
+    image: python:3.13-alpine
+    restart: unless-stopped
+    mem_limit: 128m
+    networks:
+      web:
+        aliases:
+          - static-labels-site
+    volumes:
+      - ./data:/data
+
+networks:
+  web:
+    name: ${MD_WEB_NETWORK:-web}
+    external: true

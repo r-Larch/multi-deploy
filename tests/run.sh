@@ -68,7 +68,7 @@ done
 migrated="-v $(host_path "$MIGRATED"):/etc/caddy/apps:ro"
 # shellcheck disable=SC2086 # $migrated is two words on purpose
 out=$(caddy_run $migrated "$CADDY_IMAGE" caddy validate --config /etc/caddy/Caddyfile 2>&1) && rc=0 || rc=$?
-assert_eq "the six migrated site.caddy files are valid together" 0 "$rc"
+assert_eq "the migrated site.caddy files are valid together" 0 "$rc"
 # shellcheck disable=SC2086
 json=$(caddy_run $migrated "$CADDY_IMAGE" caddy adapt --config /etc/caddy/Caddyfile 2>/dev/null)
 assert_contains "the compress snippet encodes html" "$json" '"Content-Type":["text/html*"'

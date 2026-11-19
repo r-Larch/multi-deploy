@@ -1,0 +1,5 @@
+# Proxy config of static-labels, imported by caddy/Caddyfile. Apply changes with: app proxy reload
+# Snippets defined here are named (static-labels-…). No log directive: the root Caddyfile logs every site.
+static.example-j.test {
+	reverse_proxy static-labels-site:8000
+}

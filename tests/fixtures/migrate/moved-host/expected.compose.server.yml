@@ -1,0 +1,12 @@
+# The host moved to another domain: both routers only redirect, no request reaches the service.
+services:
+  web:
+    networks:
+      web:
+        aliases:
+          - moved-host-web
+
+networks:
+  web:
+    external: true
+    name: ${MD_WEB_NETWORK:-web}

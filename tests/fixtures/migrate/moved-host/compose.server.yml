@@ -1,0 +1,25 @@
+# The host moved to another domain: both routers only redirect, no request reaches the service.
+services:
+  web:
+    networks:
+      - web
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=web"
+      - "traefik.http.routers.moved-host.rule=Host(`old.example-h.test`)"
+      - "traefik.http.routers.moved-host.entrypoints=websecure"
+      - "traefik.http.routers.moved-host.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.moved-host.middlewares=moved-host-redirect"
+      - "traefik.http.routers.moved-host.service=noop@internal"
+      - "traefik.http.routers.moved-host-http.rule=Host(`old.example-h.test`)"
+      - "traefik.http.routers.moved-host-http.entrypoints=web"
+      - "traefik.http.routers.moved-host-http.middlewares=moved-host-redirect"
+      - "traefik.http.routers.moved-host-http.service=noop@internal"
+      - "traefik.http.middlewares.moved-host-redirect.redirectregex.regex=^https?://old[.]example-h[.]test/(.*)"
+      - "traefik.http.middlewares.moved-host-redirect.redirectregex.replacement=https://new.example-i.test/$${1}"
+      - "traefik.http.middlewares.moved-host-redirect.redirectregex.permanent=true"
+
+networks:
+  web:
+    external: true
+    name: web

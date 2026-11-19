@@ -1,0 +1,5 @@
+# Proxy config of moved-host, imported by caddy/Caddyfile. Apply changes with: app proxy reload
+# Snippets defined here are named (moved-host-…). No log directive: the root Caddyfile logs every site.
+old.example-h.test, http://old.example-h.test {
+	redir https://new.example-i.test{uri} permanent
+}

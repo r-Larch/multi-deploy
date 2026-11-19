@@ -1,0 +1,5 @@
+# Proxy config of code-labels, imported by caddy/Caddyfile. Apply changes with: app proxy reload
+# Snippets defined here are named (code-labels-…). No log directive: the root Caddyfile logs every site.
+code.example-k.test {
+	reverse_proxy code-labels-app:8080
+}

@@ -1,0 +1,16 @@
+# Proxy config of auth-headers, imported by caddy/Caddyfile. Apply changes with: app proxy reload
+# Snippets defined here are named (auth-headers-…). No log directive: the root Caddyfile logs every site.
+app.example-g.test {
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+	}
+	forward_auth https://auth.example-f.test {
+		uri /auth/forward
+		header_up Host {upstream_hostport}
+		copy_headers X-Forwarded-User
+	}
+	reverse_proxy auth-headers-app:3000
+}

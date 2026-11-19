@@ -1,0 +1,12 @@
+# Only an https router: Caddy redirects http to https itself.
+services:
+  app:
+    networks:
+      web:
+        aliases:
+          - auth-headers-app
+
+networks:
+  web:
+    external: true
+    name: ${MD_WEB_NETWORK:-web}

@@ -1,0 +1,4 @@
+# Stub of the app repo's compose (config only, never started).
+services:
+  web:
+    image: python:3.13-alpine

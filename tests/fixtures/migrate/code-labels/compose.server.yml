@@ -1,0 +1,4 @@
+# The repo's compose carries the Traefik labels; the server only caps memory.
+services:
+  app:
+    mem_limit: 256m
