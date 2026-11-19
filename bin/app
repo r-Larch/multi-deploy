@@ -340,6 +340,7 @@ cmd_ci_logs() {
   while true; do
     # Find newest log file
     local newest=""
+    # shellcheck disable=SC2012 # log names are timestamps
     newest=$(ls -1t "$log_dir"/*.log 2>/dev/null | head -n1 || true)
     if [[ -z "$newest" ]]; then
       printf '[%s] Waiting for first log file...\n' "$(date -Is)"
@@ -373,10 +374,13 @@ cmd_list() {
   printf "%-20s %-8s %-14s\n" "----" "-----" "------"
   for d in "$APPS_DIR"/*; do
     [[ -d "$d" ]] || continue
-    local name=$(basename "$d")
+    local name
+    name=$(basename "$d")
     if [[ ! -f "$d/app.env" ]]; then continue; fi
     # Load context
-    NAME="$name"; APP_META_DIR="$d"; APP_ENV="$d/app.env"; source "$APP_ENV" || true
+    NAME="$name"; APP_META_DIR="$d"; APP_ENV="$d/app.env"
+    # shellcheck disable=SC1090
+    source "$APP_ENV" || true
     # Timer state
     local timer="n/a"
     if [[ -n "${REPO:-}" ]]; then
