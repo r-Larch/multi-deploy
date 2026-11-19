@@ -311,6 +311,21 @@ than one service at a time, set it in that app's `app.env`:
 COMPOSE_PARALLEL_LIMIT=4
 ```
 
+### Keeping Helper Images
+
+Unused images older than 5 days are pruned after every deploy and daily. An image
+that only an exited one-shot container uses — a build sandbox image an app starts
+with `docker run --rm`, for example — counts as unused and would be deleted. Label
+it `multi-deploy.keep=true` and the prune leaves it alone:
+
+```dockerfile
+FROM mcr.microsoft.com/dotnet/sdk:9.0
+LABEL multi-deploy.keep=true
+```
+
+or at build time: `docker build --label multi-deploy.keep=true -t cms-build:local .`.
+The label protects the image only; the build cache is still pruned by age.
+
 ### Branch Deployments
 
 Deploy different branches for staging/testing:

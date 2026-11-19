@@ -211,4 +211,27 @@ assert_eq "Caddy was never restarted" "$caddy_started" "$(started_at)"
 for app in app-one app-two; do "$INSTALL_DIR/bin/app-compose" "$app" down >/dev/null 2>&1 || true; done
 (cd "$INSTALL_DIR/caddy" && docker compose down >/dev/null 2>&1) || true
 
+echo "# docker-prune.sh keeps images labelled multi-deploy.keep=true"
+# The prune is scoped to this run's label, so nothing outside the test can go.
+host_images() { docker images -q | sort -u; }
+prune_keep="md-test-prune-keep:$MD_TEST_RUN"
+prune_drop="md-test-prune-drop:$MD_TEST_RUN"
+images_before=$(host_images)
+printf 'FROM %s
+' "$NGINX_IMAGE" | docker build -q --label "$MD_TEST_LABEL"   --label multi-deploy.keep=true -t "$prune_keep" - >/dev/null
+printf 'FROM %s
+' "$NGINX_IMAGE" | docker build -q --label "$MD_TEST_LABEL" -t "$prune_drop" - >/dev/null
+keep_id=$(docker image inspect -f '{{.Id}}' "$prune_keep")
+drop_id=$(docker image inspect -f '{{.Id}}' "$prune_drop")
+sleep 1
+out=$(PRUNE_LABEL_SCOPE="$MD_TEST_LABEL" PRUNE_LOCK_FILE=/tmp/md-test-prune.lock   /src/bin/docker-prune.sh --days 0 2>&1) && rc=0 || rc=$?
+assert_eq "docker-prune.sh succeeds" 0 "$rc"
+assert_contains "the build cache prune is skipped in scoped mode" "$out" "build cache prune skipped"
+docker image inspect "$keep_id" >/dev/null 2>&1 && rc=0 || rc=$?
+assert_eq "the image labelled multi-deploy.keep=true survives" 0 "$rc"
+docker image inspect "$drop_id" >/dev/null 2>&1 && rc=0 || rc=$?
+assert_eq "the unlabelled image is pruned" 1 "$(( rc != 0 ))"
+docker rmi -f "$keep_id" >/dev/null 2>&1 || true
+assert_eq "the host image set is otherwise unchanged" "$images_before" "$(host_images)"
+
 finish "e2e"
