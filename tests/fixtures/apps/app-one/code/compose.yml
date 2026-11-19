@@ -1,0 +1,4 @@
+services:
+  web:
+    image: nginx:1.27-alpine
+    command: ["/bin/sh", "-c", "echo app-one > /usr/share/nginx/html/index.html && exec nginx -g 'daemon off;'"]

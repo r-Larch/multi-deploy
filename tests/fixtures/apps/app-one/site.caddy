@@ -1,0 +1,6 @@
+app-one.test {
+	import security-headers
+	reverse_proxy app-one-web:80 {
+		import sse
+	}
+}

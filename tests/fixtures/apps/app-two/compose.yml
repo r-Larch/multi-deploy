@@ -1,0 +1,15 @@
+services:
+  web:
+    image: nginx:1.27-alpine
+    command: ["/bin/sh", "-c", "echo app-two > /usr/share/nginx/html/index.html && exec nginx -g 'daemon off;'"]
+    labels:
+      multi-deploy.test: ${MD_TEST_RUN:-unit}
+    networks:
+      web:
+        aliases:
+          - app-two-web
+
+networks:
+  web:
+    external: true
+    name: ${MD_WEB_NETWORK:-web}

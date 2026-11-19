@@ -1,0 +1,13 @@
+services:
+  web:
+    labels:
+      multi-deploy.test: ${MD_TEST_RUN:-unit}
+    networks:
+      web:
+        aliases:
+          - app-one-web
+
+networks:
+  web:
+    external: true
+    name: ${MD_WEB_NETWORK:-web}
