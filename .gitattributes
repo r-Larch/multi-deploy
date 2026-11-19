@@ -4,3 +4,4 @@ Caddyfile  text eol=lf
 *.caddy    text eol=lf
 *.yml      text eol=lf
 Dockerfile text eol=lf
+*.env      text eol=lf
