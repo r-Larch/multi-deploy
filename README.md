@@ -508,6 +508,11 @@ Tests need Docker; everything runs in pinned containers (Git Bash on Windows wor
 - `./tests/run.sh` — shellcheck, unit tests, Caddyfile validation
 - `./tests/e2e/run.sh` — fresh install with sample apps served over TLS (Caddy's local CA), and a
   v1 install (the `1.1.0` tag) with Traefik upgraded, cut over, rolled back and cleaned up
+- `./tests/e2e/run.sh --cms <path>` — instead of the above, a CMS repository that ships a
+  multi-deploy kit (`deploy/multi-deploy/cms/`) and a smoke test (`tests/e2e/smoke.mjs`): its
+  `HEAD` is installed as the app `mde2ecms` behind the shared Caddy and the smoke test runs through
+  it; a forged `X-Forwarded-Host` must not reach the app. Needs `GITHUB_PACKAGES_TOKEN` and
+  `SIXLABORS_LICENSE_KEY` (environment or the repository's `.env`)
 
 Test resources carry the label `multi-deploy.test` and use their own network; they are removed at
 the end.

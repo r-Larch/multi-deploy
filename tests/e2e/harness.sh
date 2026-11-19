@@ -12,36 +12,9 @@ source /src/tests/assert.sh
 : "${MD_TEST_NETWORK:?}" "${MD_TEST_SUBNET:?}" "${MD_TEST_ALT_SUBNET:?}"
 : "${CADDY_IMAGE:?}" "${NGINX_IMAGE:?}" "${CURL_IMAGE:?}" "${TRAEFIK_IMAGE:?}"
 
-export INSTALL_DIR="$MD_TEST_MOUNT/opt/multi-deploy"
-export MD_WEB_NETWORK="$MD_TEST_NETWORK" MD_WEB_SUBNET="$MD_TEST_SUBNET"
-export MD_RESOURCE_LABEL="$MD_TEST_LABEL" MD_ACME_EMAIL=e2e@example.test
-export MD_CADDY_IMAGE="$CADDY_IMAGE" MD_TEST_RUN
-export REPO_URL=file:///tmp/src REPO_REF=md-test
-CADDY=multi-deploy-caddy
-ROOT_CA="$INSTALL_DIR/caddy/data/caddy-data/caddy/pki/authorities/local/root.crt"
+# shellcheck source=tests/e2e/install.sh
+source /src/tests/e2e/install.sh
 
-# setup.sh installs from a git snapshot of the checkout, on a branch, to exercise REPO_REF.
-rsync -a --exclude .git --exclude .claude --exclude "brief-u*.md" --exclude fixtures-src --exclude .commitmsg /src/ /tmp/src/
-git -C /tmp/src init -q -b md-test
-git -C /tmp/src add -A
-git -C /tmp/src -c user.name=e2e -c user.email=e2e@example.test commit -q -m snapshot
-
-# Test-only additions next to the installed caddy/compose.yml: no host ports, the run label,
-# and local_certs through the Caddyfile's test hook. setup.sh's rsync leaves them in place.
-mkdir -p "$INSTALL_DIR/caddy"
-cat > "$INSTALL_DIR/caddy/compose.override.yml" <<EOF
-services:
-  caddy:
-    ports: !reset []
-    labels:
-      multi-deploy.test: "$MD_TEST_RUN"
-    volumes:
-      - ./test.caddy:/etc/caddy/test.caddy:ro
-EOF
-printf 'local_certs\nskip_install_trust\n' > "$INSTALL_DIR/caddy/test.caddy"
-
-run_setup() { bash /tmp/src/setup.sh </dev/null 2>&1; }
-caddy_state() { local s; s=$(docker inspect -f '{{.State.Running}}' "$CADDY" 2>/dev/null) || s=absent; echo "$s"; }
 subnet_of() { local s; s=$(docker network inspect -f '{{range .IPAM.Config}}{{.Subnet}}{{end}}' "$1" 2>/dev/null) || s=absent; echo "$s"; }
 curl_run() {
   docker run --rm --label "$MD_TEST_LABEL" --network "$MD_WEB_NETWORK" --user 0 \
@@ -122,8 +95,7 @@ assert_eq "app-two still serves" app-two \
   "$(curl_run --cacert "$ROOT_CA" --resolve "app-two.test:443:$ip" https://app-two.test/)"
 
 echo "# app create, deploy and delete through the proxy"
-# docker-prune.sh (run after every deploy) prunes the whole Docker host; the harness swaps in a no-op.
-printf '#!/bin/sh\necho "docker-prune.sh skipped in the e2e harness"\n' > "$INSTALL_DIR/bin/docker-prune.sh"
+no_prune "$INSTALL_DIR"
 mkdir -p /tmp/app-three-repo
 cat > /tmp/app-three-repo/compose.yml <<EOF
 services:
@@ -383,8 +355,6 @@ by_traefik() { via "$(ip_of "$TRAEFIK")" "$1" -k; }
 by_caddy() { via "$(ip_of "$CADDY")" "$1" --cacert "$V1_ROOT_CA"; }
 traefik_running() { docker ps -q --filter label=com.docker.compose.project=traefik | wc -l; }
 v2() { INSTALL_DIR="$V1" "$V1/bin/app" "$@"; }
-# show <output>: the operator-visible output in the test log.
-show() { local l; while IFS= read -r l; do echo "    | $l"; done <<< "$1"; }
 
 assert_eq "v1: Traefik serves $HOST_A" "plain-a|200" "$(by_traefik "$HOST_A")"
 assert_eq "v1: Traefik serves $HOST_B" "plain-b|200" "$(by_traefik "$HOST_B")"
@@ -396,7 +366,7 @@ out=$(INSTALL_DIR="$V1" run_setup) && rc=0 || rc=$?
 assert_eq "setup.sh succeeds" 0 "$rc"
 assert_contains "setup.sh leaves Caddy for the cutover" "$out" "Caddy was NOT started"
 assert_eq "Caddy is not started" absent "$(caddy_state)"
-printf '#!/bin/sh\necho "docker-prune.sh skipped in the e2e harness"\n' > "$V1/bin/docker-prune.sh"
+no_prune "$V1"
 
 out=$(v2 deploy plain-a 2>&1) && rc=0 || rc=$?
 assert_eq "app deploy works between the v2 install and the cutover" 0 "$rc"
