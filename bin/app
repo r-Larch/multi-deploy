@@ -2,7 +2,7 @@
 # Multi-deploy app manager
 # Usage:
 #   app create [name]      # interactive app setup (name optional)
-#   app delete <name>      # disable timer and delete app
+#   app delete <name>      # disable timer, delete app, reload the proxy
 #   app update <name>      # git fetch/pull if changed, then up (no forced rebuild)
 #   app deploy <name>      # build & up (force deploy)
 #   app up <name>          # compose up -d
@@ -14,6 +14,7 @@
 #   app pull <name>        # only git fetch/reset to origin/<branch>
 #   app shell <name> <svc> # open shell in running container
 #   app run <name> ...args # run raw docker compose args
+#   app proxy <validate|reload|status|logs> # the shared Caddy proxy
 set -euo pipefail
 
 INSTALL_DIR=${INSTALL_DIR:-/opt/multi-deploy}
@@ -56,20 +57,50 @@ list_services_from_compose() {
     in_s==1 {
       # End of services block when indentation goes back to base and next key starts
       if ($0 !~ /^[ \t]*$/ && match($0,/[^ ]/)-1 <= base && $0 !~ /^[ \t]*#/ && $0 !~ /^[ \t]*-/) { exit }
-      if (match($0,/^([ \t]{2,})([A-Za-z0-9_.-]+):[ \t]*$/, m)) {
-        ind=length(m[1]);
+      if ($0 ~ /^[ \t][ \t]+[A-Za-z0-9_.-]+:[ \t]*$/) {
+        ind=match($0,/[^ \t]/)-1;
+        key=substr($0, ind+1); sub(/:.*/, "", key);
         if (!svc_ind) svc_ind=ind;
-        if (ind==svc_ind) print m[2];
+        if (ind==svc_ind) print key;
       }
     }
   ' "$compose_path" | sort -u
 }
 
-extract_traefik_labels() {
-  # Grep traefik labels present in the compose file (best-effort)
-  local compose_path="$1"
-  grep -n "traefik\." "$compose_path" || true
+# select_service [services...]: prints the service to put behind the proxy (name or number).
+select_service() {
+  local svc i=1 s
+  if (( $# > 0 )); then
+    echo "Services in the repo compose:" >&2
+    for s in "$@"; do echo "  [$i] $s" >&2; ((i++)); done
+  fi
+  while true; do
+    svc=$(default_read "Service to put behind the proxy (name or number)" "${1:-app}" APP_CREATE_SERVICE)
+    if [[ "$svc" =~ ^[0-9]+$ ]] && (( svc >= 1 && svc <= $# )); then svc=${!svc}; fi
+    if (( $# == 0 )) || printf '%s\n' "$@" | grep -qxF -- "$svc"; then echo "$svc"; return 0; fi
+    red "Not a service of the repo compose: $svc" >&2
+    [[ -z "${APP_CREATE_SERVICE:-}" ]] || return 1
+  done
 }
+
+# write_site_caddy <file> <app> <hosts> <upstream> <sse:y|n> <headers:y|n>
+write_site_caddy() {
+  local file="$1" app="$2" hosts="$3" upstream="$4" sse="$5" headers="$6"
+  {
+    echo "# Proxy config of $app, imported by caddy/Caddyfile. Apply changes with: app proxy reload"
+    echo "# Snippets defined here are named ($app-…). No log directive: the root Caddyfile logs every site."
+    echo "$hosts {"
+    [[ "$headers" == y ]] && printf '\timport security-headers\n'
+    if [[ "$sse" == y ]]; then
+      printf '\treverse_proxy %s {\n\t\timport sse\n\t}\n' "$upstream"
+    else
+      printf '\treverse_proxy %s\n' "$upstream"
+    fi
+    echo "}"
+  } > "$file"
+}
+
+yes_no() { [[ "${1,,}" == y || "${1,,}" == yes ]] && echo y || echo n; }
 
 ensure_dirs() {
   mkdir -p "$APPS_DIR"
@@ -118,7 +149,7 @@ cmd_create() {
   fi
   branch=""
   if [[ -n "$repo" ]]; then
-    branch=$(default_read "Git branch" "main")
+    branch=$(default_read "Git branch" "main" APP_CREATE_BRANCH)
     [[ -z "$branch" ]] && branch=main
   fi
 
@@ -127,8 +158,8 @@ cmd_create() {
   local ssh_dir="$APPS_DIR/$name/.ssh"
   mkdir -p "$meta_dir"
 
-  local compose_file_repo=""
-  local svc=""
+  local compose_file_repo="" svc=""
+  local -a services=()
   if [[ -n "$repo" ]]; then
     if [[ -d "$repo_dir/.git" ]]; then
       echo "Repo already present at $repo_dir. Fetching updates..."
@@ -165,25 +196,24 @@ cmd_create() {
     )
     if compose_file_repo=$(find_compose_file "$repo_dir"); then
       echo "Detected compose file in repo: $compose_file_repo"
-      echo
-      echo "Detecting services in $compose_file_repo ..."
       mapfile -t services < <(list_services_from_compose "$repo_dir/$compose_file_repo")
-      if (( ${#services[@]} > 0 )); then
-        echo "Found services: ${services[*]}"
-        echo
-        echo "Select the service to attach to Traefik (network+enable only):"
-        local i=1
-        for s in "${services[@]}"; do echo "  [$i] $s"; ((i++)); done
-        while true; do
-          read -r -p "Service number: " idx || true
-          if [[ "$idx" =~ ^[0-9]+$ ]] && (( idx>=1 && idx<=${#services[@]} )); then
-            svc="${services[idx-1]}"; break
-          fi
-          echo "Invalid selection"
-        done
-      fi
     fi
   fi
+
+  echo
+  bold "Proxy"
+  svc=$(select_service "${services[@]}")
+  local hosts upstream port sse headers
+  local -a hosts_list
+  hosts=$(default_read "Host name(s), comma separated" "" APP_CREATE_HOST)
+  read -ra hosts_list <<< "${hosts//,/ }"
+  if (( ${#hosts_list[@]} == 0 )); then red "A host name is required"; exit 1; fi
+  hosts=$(printf '%s, ' "${hosts_list[@]}"); hosts=${hosts%, }
+  port=$(default_read "Port $svc listens on" "8080" APP_CREATE_PORT)
+  if ! [[ "$port" =~ ^[0-9]+$ ]]; then red "Not a port: $port"; exit 1; fi
+  upstream="$name-$svc:$port"
+  sse=$(yes_no "$(default_read "Stream responses (server-sent events)? y/N" "n" APP_CREATE_SSE)")
+  headers=$(yes_no "$(default_read "Add the shared security headers (HSTS preload)? y/N" "n" APP_CREATE_HEADERS)")
 
   # app.env
   local env_path="$meta_dir/app.env"
@@ -219,44 +249,44 @@ include:
 EOF
   fi
 
-  # compose.server.yml
+  # compose.server.yml: the service joins the proxy network as <name>-<service>, the
+  # upstream in site.caddy; it keeps the project's default network for its own services.
   local override_path="$meta_dir/compose.server.yml"
-  if [[ -n "$svc" ]]; then
+  if [[ -n "$compose_file_repo" ]]; then
     cat >"$override_path" <<EOF
 services:
   $svc:
     networks:
-      - web
-    labels:
-      - "traefik.enable=true"
-      #- "traefik.http.routers.myapp.rule=Host(\`myapp-domain.com\`)"
-      #- "traefik.http.routers.myapp.entrypoints=websecure"
-      #- "traefik.http.routers.myapp.tls.certresolver=letsencrypt"
+      default: {}
+      web:
+        aliases:
+          - $name-$svc
 
 networks:
   web:
     external: true
-    name: web
+    name: \${MD_WEB_NETWORK:-web}
 EOF
   else
-    cat >"$override_path" <<'EOF'
-# Select a service name from your repo's compose and uncomment below
+    cat >"$override_path" <<EOF
+# Define the app's services here; the proxied one joins the proxy network as $name-$svc:
 # services:
-#   app:
+#   $svc:
+#     image: …
 #     networks:
-#       - web
-#     labels:
-#       - "traefik.enable=true"
-#       - "traefik.http.routers.myapp.rule=Host(\`myapp-domain.com\`)"
-#       - "traefik.http.routers.myapp.entrypoints=websecure"
-#       - "traefik.http.routers.myapp.tls.certresolver=letsencrypt"
+#       web:
+#         aliases:
+#           - $name-$svc
 
 networks:
   web:
     external: true
-    name: web
+    name: \${MD_WEB_NETWORK:-web}
 EOF
   fi
+
+  local site_path="$meta_dir/site.caddy"
+  write_site_caddy "$site_path" "$name" "$hosts" "$upstream" "$sse" "$headers"
 
   echo
   bold "Review"
@@ -266,12 +296,14 @@ EOF
   [[ -n "$branch" ]] && echo "Branch:            $branch"
   echo "Stack compose:     $stack_compose"
   echo "override compose:  $override_path"
+  echo "Proxy site:        $site_path ($hosts -> $upstream)"
 
   echo
   bold "Next steps"
   if [[ -n "$repo" ]]; then
     echo "- cd $repo_dir"
     echo "- Configure your app if required (env, secrets, migrations, etc.)"
+    echo "- Deploy (starts the stack and reloads the proxy): $(basename "$0") deploy $name"
     echo "- Then enable deployments: $(basename "$0") timers $name on"
   else
     echo "- Edit $override_path and add your service under services:"
@@ -291,6 +323,11 @@ cmd_remove() {
     fi
     rm -rf "$dir"
     echo "Deleted $name"
+    # Its site.caddy and global.caddy went with the directory; the proxy drops the routes.
+    if ! "$INSTALL_DIR/bin/app-proxy" reload; then
+      red "Proxy reload failed: the routes of $name stay live until 'app proxy reload' succeeds."
+      exit 1
+    fi
   else
     echo "Aborted"
   fi
@@ -302,6 +339,7 @@ cmd_up() { local n=${1:-}; [[ -z "$n" ]] && { red "Usage: $(basename "$0") up <n
 cmd_down() { local n=${1:-}; [[ -z "$n" ]] && { red "Usage: $(basename "$0") down <name>"; exit 1; }; "$INSTALL_DIR/bin/app-compose" "$n" down; }
 cmd_pull() { local n=${1:-}; [[ -z "$n" ]] && { red "Usage: $(basename "$0") pull <name>"; exit 1; }; "$INSTALL_DIR/bin/app-git" "$n" pull; }
 cmd_git() { local n=${1:-}; shift || true; [[ -z "$n" ]] && { red "Usage: $(basename "$0") git <name> <git-command>"; exit 1; }; "$INSTALL_DIR/bin/app-git" "$n" "$@"; }
+cmd_proxy() { "$INSTALL_DIR/bin/app-proxy" "$@"; }
 cmd_prune() { "$INSTALL_DIR/bin/docker-prune.sh" "$@"; }
 cmd_run() { local n=${1:-}; shift || true; [[ -z "$n" ]] && { red "Usage: $(basename "$0") run <name> <compose-args...>"; exit 1; }; "$INSTALL_DIR/bin/app-compose" "$n" "$@"; }
 cmd_shell() { local n=${1:-}; local svc=${2:-}; [[ -z "$n" || -z "$svc" ]] && { red "Usage: $(basename "$0") shell <name> <service>"; exit 1; }; "$INSTALL_DIR/bin/app-compose" "$n" exec -it "$svc" sh; }
@@ -372,23 +410,23 @@ cmd_list() {
   ensure_dirs
   printf "%-20s %-8s %-14s\n" "NAME" "TIMER" "STATUS"
   printf "%-20s %-8s %-14s\n" "----" "-----" "------"
+  local parallel_limit=$COMPOSE_PARALLEL_LIMIT
   for d in "$APPS_DIR"/*; do
     [[ -d "$d" ]] || continue
     local name
     name=$(basename "$d")
     if [[ ! -f "$d/app.env" ]]; then continue; fi
-    # Load context
+    # The keys of one app.env (ENV_FILE, REPO, …) must not reach the next app.
+    unset NAME REPO BRANCH COMPOSE_FILE ENV_FILE COMPOSE_ENV_FILE
+    COMPOSE_PARALLEL_LIMIT=$parallel_limit
     NAME="$name"; APP_META_DIR="$d"; APP_ENV="$d/app.env"
     # shellcheck disable=SC1090
     source "$APP_ENV" || true
-    # Timer state
     local timer="n/a"
     if [[ -n "${REPO:-}" ]]; then
       if systemctl --quiet is-enabled "multi-deploy@${name}.timer" 2>/dev/null; then timer="on"; else timer="off"; fi
     fi
-    # Compose status via shared helper
     APP_COMPOSE_FILE="$d/${COMPOSE_FILE:-compose.yml}"
-    build_compose_cmd
     local status; status=$(print_compose_status)
     printf "%-20s %-8s %-14s\n" "$name" "$timer" "$status"
   done
@@ -430,6 +468,15 @@ cmd_detail() {
     git_status=$("$INSTALL_DIR/bin/app-git" "$name" status 2>/dev/null || true)
     [[ -n "$git_status" ]] && echo "Git: $git_status" || echo "Git: (unavailable)"
   fi
+  local f
+  for f in site.caddy global.caddy; do
+    if [[ -f "$APP_META_DIR/$f" ]]; then
+      echo
+      echo "Proxy ($f):"
+      sed 's/^/  /' "$APP_META_DIR/$f"
+    fi
+  done
+  [[ -f "$APP_META_DIR/site.caddy" ]] || echo "Proxy: no site.caddy"
   echo
   if [[ -z "$svc" ]]; then
     echo "Services:"
@@ -458,7 +505,7 @@ usage() {
   cat <<USAGE
 Usage:
   $(basename "$0") create [name]     # interactive app setup
-  $(basename "$0") delete <name>     # disable timer and delete app
+  $(basename "$0") delete <name>     # disable timer, delete app, reload the proxy
   $(basename "$0") timers <name> [on|off] # get/set timer state
   $(basename "$0") update <name>     # git fetch/pull if changed, then up
   $(basename "$0") deploy <name>     # build & up (force deploy)
@@ -474,6 +521,7 @@ Usage:
   $(basename "$0") shell <name> <svc># open shell in running container
   $(basename "$0") run <name> ...    # run raw docker compose args
   $(basename "$0") prune [--days N] [--volumes] # reclaim unused docker data (default: older than 5d)
+  $(basename "$0") proxy <validate|reload|status|logs> # check, reload, inspect the Caddy proxy
 USAGE
 }
 
@@ -497,6 +545,7 @@ main() {
     shell)  shift || true; cmd_shell "$@" ;;
     run)    shift || true; cmd_run "$@" ;;
     prune)  shift || true; cmd_prune "$@" ;;
+    proxy)  shift || true; cmd_proxy "$@" ;;
     -h|--help|help|"") usage ;;
     *) red "Unknown command: $cmd"; echo; usage; exit 1 ;;
   esac

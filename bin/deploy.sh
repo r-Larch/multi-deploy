@@ -71,6 +71,8 @@ if [[ $changed -eq 1 ]]; then
   "$root_dir/bin/app-compose" "$NAME" build --pull
   echo "Starting services..."
   "$root_dir/bin/app-compose" "$NAME" up -d --remove-orphans
+  echo "Reloading the proxy..."
+  "$root_dir/bin/app-proxy" reload
   # Every `build --pull` leaves the previous image and its build cache behind;
   # on a 1-min poll that grows unbounded. Reclaim right after the new stack is
   # up, so the images we just replaced are the ones eligible once they age out.

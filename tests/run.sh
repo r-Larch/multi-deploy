@@ -23,11 +23,13 @@ else
 fi
 
 build_test_image
-if docker run --rm --label "$RUN_LABEL" -v "$SRC:/src:ro" "$TEST_IMAGE" bash /src/tests/unit/setup_test.sh; then
-  ok "unit tests of setup.sh"
-else
-  not_ok "unit tests of setup.sh"
-fi
+for t in tests/unit/*_test.sh; do
+  if docker run --rm --label "$RUN_LABEL" -v "$SRC:/src:ro" "$TEST_IMAGE" bash "/src/$t"; then
+    ok "unit tests $t"
+  else
+    not_ok "unit tests $t"
+  fi
+done
 
 echo "# Caddyfile ($CADDY_IMAGE)"
 caddy_run() {
@@ -48,7 +50,7 @@ assert_eq "root Caddyfile with two apps is valid" 0 "$rc"
 
 # shellcheck disable=SC2086
 json=$(caddy_run $apps "$CADDY_IMAGE" caddy adapt --config /etc/caddy/Caddyfile 2>/dev/null)
-assert_contains "global.caddy of an app lands in the global options" "$json" '"grace_period":7000000000'
+assert_contains "global.caddy of an app lands in the global options" "$json" '"on_demand":{"permission":{"endpoint":"http://app-one-web/ask"'
 assert_contains "site.caddy of app-one is served" "$json" '"app-one.test"'
 assert_contains "site.caddy of app-two is served" "$json" '"app-two.test"'
 assert_contains "sse snippet flushes immediately" "$json" '"flush_interval":-1'

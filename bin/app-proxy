@@ -1,0 +1,190 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# app-proxy <validate|reload|status|logs [docker-logs-args]>
+# The single owner of every interaction with the shared Caddy proxy (container multi-deploy-caddy).
+# Caddy reads caddy/Caddyfile, which imports apps/*/global.caddy and apps/*/site.caddy.
+
+INSTALL_DIR=${INSTALL_DIR:-/opt/multi-deploy}
+
+# shellcheck disable=SC1091
+source "$INSTALL_DIR/bin/lib-app" || { echo "Missing $INSTALL_DIR/bin/lib-app" >&2; exit 1; }
+
+CADDY_CONTAINER=multi-deploy-caddy
+CADDY_CONFIG=(--config /etc/caddy/Caddyfile --adapter caddyfile)
+
+usage() { echo "Usage: $(basename "$0") <validate|reload|status|logs [docker-logs-args]>" >&2; }
+
+# Outline of a Caddyfile fragment, one record per line:
+#   site <address>       an address of a top-level site block
+#   snippet <name>       a top-level snippet definition (<name>)
+#   directive <name>     the first token of a top-level entry (global options in global.caddy)
+#   log <line>           a line whose first token is `log`, at any depth
+caddy_outline() {
+  awk '
+    function flush(   n, i, parts, a) {
+      n = split(hdr, parts, /[ \t,]+/)
+      hdr = ""
+      for (i = 1; i <= n; i++) if (parts[i] != "") { a = parts[i]; break }
+      if (a == "") return
+      if (a ~ /^\(.*\)$/) { print "snippet " substr(a, 2, length(a) - 2); return }
+      print "directive " a
+      for (; i <= n; i++) if (parts[i] != "") print "site " parts[i]
+    }
+    {
+      line = $0
+      if (line ~ /^[ \t]*#/) line = ""; else sub(/[ \t]#.*$/, "", line)
+      n = split(line, tok, /[ \t]+/)
+      first = 1
+      for (i = 1; i <= n; i++) {
+        t = tok[i]
+        if (t == "") continue
+        if (first && t == "log") print "log " NR
+        first = 0
+        if (t == "{") { if (depth == 0) flush(); depth++; continue }
+        if (t == "}") { if (depth > 0) depth--; continue }
+        if (depth == 0) hdr = hdr " " t
+      }
+      if (depth == 0 && hdr !~ /,[ \t]*$/) flush()
+    }
+    END { if (depth == 0) flush() }
+  ' "$1"
+}
+
+# A site address without a host (https://, :443, http://:80, …) matches every host.
+is_catch_all() {
+  local addr="$1"
+  [[ "$addr" == *://* ]] && addr="${addr#*://}"
+  addr="${addr%%/*}"
+  [[ -z "${addr%:*}" ]]
+}
+
+# multi-deploy's own rules for the shared config; every refusal names the apps involved.
+cross_app_checks() {
+  local errors=() odt_owners=() catch_all=() dir app kind value bad
+  for dir in "$APPS_DIR"/*/; do
+    app=$(basename "$dir")
+    if [[ -f "$dir/global.caddy" ]]; then
+      bad=$(caddy_outline "$dir/global.caddy" | awk '$1 == "snippet" { print "(" $2 ")" } $1 == "directive" && $2 != "on_demand_tls" { print $2 }' | sort -u | paste -sd ' ' -)
+      if [[ -n "$bad" ]]; then
+        errors+=("app $app: global.caddy may contain only an on_demand_tls block, found: $bad")
+      fi
+      if caddy_outline "$dir/global.caddy" | grep -qx 'directive on_demand_tls'; then
+        odt_owners+=("$app")
+      fi
+    fi
+    if [[ -f "$dir/site.caddy" ]]; then
+      while read -r kind value; do
+        case "$kind" in
+          site)
+            if is_catch_all "$value" && [[ " ${catch_all[*]} " != *" $app "* ]]; then catch_all+=("$app"); fi ;;
+          snippet)
+            if [[ "$value" != "$app-"* ]]; then
+              errors+=("app $app: snippet ($value) must be named ($app-…)")
+            fi ;;
+          log)
+            errors+=("app $app: site.caddy line $value has a log directive; the root Caddyfile logs every site, and a site's own log turns access logs off for all others") ;;
+        esac
+      done < <(caddy_outline "$dir/site.caddy")
+    fi
+  done
+
+  if (( ${#odt_owners[@]} > 1 )); then
+    errors+=("apps ${odt_owners[*]}: more than one app defines on_demand_tls; at most one app may")
+  fi
+  if (( ${#catch_all[@]} > 1 )); then
+    errors+=("apps ${catch_all[*]}: more than one app defines a catch-all site; at most one app may")
+  elif (( ${#catch_all[@]} == 1 )) && [[ " ${odt_owners[*]} " != *" ${catch_all[0]} "* ]]; then
+    errors+=("app ${catch_all[0]}: defines a catch-all site but on_demand_tls is owned by ${odt_owners[*]:-no app}; only the on_demand_tls owner may")
+  fi
+
+  if (( ${#errors[@]} > 0 )); then
+    red "multi-deploy refuses the proxy config:" >&2
+    printf '  - %s\n' "${errors[@]}" >&2
+    return 1
+  fi
+}
+
+require_caddy() {
+  if [[ "$(docker inspect -f '{{.State.Running}}' "$CADDY_CONTAINER" 2>/dev/null)" != true ]]; then
+    red "$CADDY_CONTAINER is not running (start it: cd $INSTALL_DIR/caddy && docker compose up -d)" >&2
+    exit 1
+  fi
+}
+
+# caddy_exec <caddy-subcommand>: runs it in the container; on failure prints Caddy's error lines.
+caddy_exec() {
+  local out rc=0
+  out=$(docker exec "$CADDY_CONTAINER" caddy "$1" "${CADDY_CONFIG[@]}" 2>&1) || rc=$?
+  if (( rc != 0 )); then
+    red "caddy $1 failed:" >&2
+    { grep -E '"level":"error"|^Error' <<< "$out" || printf '%s\n' "$out"; } >&2
+  fi
+  return "$rc"
+}
+
+cmd_validate() {
+  cross_app_checks
+  require_caddy
+  caddy_exec validate
+  echo "Proxy config is valid."
+}
+
+cmd_reload() {
+  cmd_validate
+  if ! caddy_exec reload; then
+    red "Caddy kept its running config." >&2
+    exit 1
+  fi
+  echo "Caddy reloaded."
+}
+
+# Expiry of the certificate Caddy stores for <host>, from any issuer (local, ACME …).
+cert_expiry() {
+  local key="${1,,}" path enddate
+  key="${key/#\*./wildcard_.}"
+  while read -r path; do
+    [[ "$(basename "$path")" == "$key.crt" ]] || continue
+    enddate=$(docker exec "$CADDY_CONTAINER" cat "$path" | openssl x509 -noout -enddate 2>/dev/null) || continue
+    echo "${enddate#notAfter=} ($(basename "$(dirname "$(dirname "$path")")"))"
+    return 0
+  done <<< "$CERT_FILES"
+  echo "no certificate yet"
+}
+
+cmd_status() {
+  require_bin openssl
+  require_caddy
+  echo "$CADDY_CONTAINER running since $(docker inspect -f '{{.State.StartedAt}}' "$CADDY_CONTAINER")"
+  CERT_FILES=$(docker exec "$CADDY_CONTAINER" find /data/caddy/certificates -name '*.crt' 2>/dev/null || true)
+  printf "%-20s %-32s %s\n" "APP" "HOST" "CERTIFICATE EXPIRES"
+  local dir app kind value host
+  for dir in "$APPS_DIR"/*/; do
+    [[ -f "$dir/site.caddy" ]] || continue
+    app=$(basename "$dir")
+    while read -r kind value; do
+      [[ "$kind" == site ]] || continue
+      if is_catch_all "$value"; then
+        printf "%-20s %-32s %s\n" "$app" "$value" "on demand (catch-all)"
+        continue
+      fi
+      host="${value#*://}"; host="${host%%/*}"; host="${host%:*}"
+      printf "%-20s %-32s %s\n" "$app" "$value" "$(cert_expiry "$host")"
+    done < <(caddy_outline "$dir/site.caddy")
+  done
+}
+
+cmd_logs() {
+  (( $# > 0 )) || set -- --tail=200 -f
+  exec docker logs "$@" "$CADDY_CONTAINER"
+}
+
+action=${1:-}
+shift || true
+case "$action" in
+  validate) cmd_validate ;;
+  reload)   cmd_reload ;;
+  status)   cmd_status ;;
+  logs)     cmd_logs "$@" ;;
+  *) usage; exit 1 ;;
+esac

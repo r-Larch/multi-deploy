@@ -380,6 +380,10 @@ sudo app deploy myapp
 - **`timers <name>`** - Show auto-deploy status for an app
 - **`timers <name> on`** - Start auto-deployment timer (polls every minute)
 - **`timers <name> off`** - Stop auto-deployment timer (app keeps running)
+- **`proxy validate`** - Check every app's `site.caddy`/`global.caddy` (multi-deploy's cross-app rules, then Caddy's own validation)
+- **`proxy reload`** - Validate, then reload Caddy without a restart; a refused config keeps the running one
+- **`proxy status`** - Hosts per app with their certificate expiry
+- **`proxy logs [docker-logs-args]`** - Caddy's logs (default: follow, last 200 lines)
 
 ### Deployment Commands
 

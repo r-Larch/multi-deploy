@@ -18,14 +18,26 @@ APPS_DIR="${INSTALL_DIR}/apps"
 # also win.
 export COMPOSE_PARALLEL_LIMIT="${COMPOSE_PARALLEL_LIMIT:-1}"
 
+# --------------- Proxy network ---------------
+# Name of the shared proxy network, as setup.sh stored it in caddy/.env. compose.server.yml
+# files refer to it as ${MD_WEB_NETWORK:-web}.
+MD_WEB_NETWORK=${MD_WEB_NETWORK:-$( (sed -n 's/^MD_WEB_NETWORK=//p' "$INSTALL_DIR/caddy/.env" 2>/dev/null || true) | tail -n1)}
+export MD_WEB_NETWORK="${MD_WEB_NETWORK:-web}"
+
 # --------------- UX helpers ---------------
 bold() { echo -e "\e[1m$*\e[0m"; }
 red() { echo -e "\e[31m$*\e[0m"; }
 
+# default_read <prompt> [default] [env-var]: the env var, when set, answers without prompting.
 default_read() {
   local prompt="$1"; shift || true
   local default_value="${1:-}"; shift || true
+  local answer_var="${1:-}"
   local var
+  if [[ -n "$answer_var" && -n "${!answer_var:-}" ]]; then
+    echo "${!answer_var}"
+    return 0
+  fi
   if [[ -n "$default_value" ]]; then
     read -r -p "$prompt [$default_value]: " var || true
     echo "${var:-$default_value}"

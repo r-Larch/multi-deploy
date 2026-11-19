@@ -19,7 +19,7 @@ CADDY=multi-deploy-caddy
 ROOT_CA="$INSTALL_DIR/caddy/data/caddy-data/caddy/pki/authorities/local/root.crt"
 
 # setup.sh installs from a git snapshot of the checkout, on a branch, to exercise REPO_REF.
-rsync -a --exclude .git --exclude .claude --exclude brief-u2.md --exclude .commitmsg /src/ /tmp/src/
+rsync -a --exclude .git --exclude .claude --exclude brief-u2.md --exclude brief-u3.md --exclude .commitmsg /src/ /tmp/src/
 git -C /tmp/src init -q -b md-test
 git -C /tmp/src add -A
 git -C /tmp/src -c user.name=e2e -c user.email=e2e@example.test commit -q -m snapshot
@@ -80,9 +80,9 @@ cp -r /src/tests/fixtures/apps/app-one /src/tests/fixtures/apps/app-two "$INSTAL
 for app in app-one app-two; do
   assert_cmd "$app starts through bin/app-compose" "$INSTALL_DIR/bin/app-compose" "$app" up -d --quiet-pull
 done
-out=$(docker exec "$CADDY" caddy reload --config /etc/caddy/Caddyfile 2>&1) && rc=0 || rc=$?
-assert_eq "Caddy reloads with both apps" 0 "$rc"
-assert_contains "app global.caddy is applied" "$(docker exec "$CADDY" wget -qO- http://127.0.0.1:2019/config/)" '"grace_period":7000000000'
+out=$("$INSTALL_DIR/bin/app" proxy reload 2>&1) && rc=0 || rc=$?
+assert_eq "app proxy reload succeeds with both apps" 0 "$rc"
+assert_contains "app global.caddy is applied" "$(docker exec "$CADDY" wget -qO- http://127.0.0.1:2019/config/)" '"endpoint":"http://app-one-web/ask"'
 
 ip=$(docker inspect -f "{{(index .NetworkSettings.Networks \"$MD_WEB_NETWORK\").IPAddress}}" "$CADDY")
 for app in app-one app-two; do
@@ -117,6 +117,96 @@ assert_eq "network subnet is unchanged" "$MD_TEST_SUBNET" "$(subnet_of "$MD_WEB_
 assert_eq "Caddy still runs" true "$(caddy_state)"
 assert_eq "app-two still serves" app-two \
   "$(curl_run --cacert "$ROOT_CA" --resolve "app-two.test:443:$ip" https://app-two.test/)"
+
+echo "# app create, deploy and delete through the proxy"
+# docker-prune.sh (run after every deploy) prunes the whole Docker host; the harness swaps in a no-op.
+printf '#!/bin/sh\necho "docker-prune.sh skipped in the e2e harness"\n' > "$INSTALL_DIR/bin/docker-prune.sh"
+mkdir -p /tmp/app-three-repo
+cat > /tmp/app-three-repo/compose.yml <<EOF
+services:
+  web:
+    image: $NGINX_IMAGE
+    command: ["/bin/sh", "-c", "echo app-three > /usr/share/nginx/html/index.html && exec nginx -g 'daemon off;'"]
+    labels:
+      multi-deploy.test: "$MD_TEST_RUN"
+
+networks:
+  default:
+    labels:
+      multi-deploy.test: "$MD_TEST_RUN"
+EOF
+git -C /tmp/app-three-repo init -q -b main
+git -C /tmp/app-three-repo add -A
+git -C /tmp/app-three-repo -c user.name=e2e -c user.email=e2e@example.test commit -q -m app-three
+
+app() { "$INSTALL_DIR/bin/app" "$@"; }
+started_at() { docker inspect -f '{{.State.StartedAt}}' "$CADDY"; }
+caddy_started=$(started_at)
+serves() {
+  local host="$1" body=""
+  for _ in $(seq 1 30); do
+    body=$(curl_run --cacert "$ROOT_CA" --resolve "$host:443:$ip" "https://$host/" 2>/dev/null) && break
+    sleep 1
+  done
+  echo "$body"
+}
+ip=$(docker inspect -f "{{(index .NetworkSettings.Networks \"$MD_WEB_NETWORK\").IPAddress}}" "$CADDY")
+
+out=$(APP_CREATE_BRANCH=main APP_CREATE_SERVICE=web APP_CREATE_HOST=app-three.test APP_CREATE_PORT=80 \
+  APP_CREATE_SSE=y APP_CREATE_HEADERS=y app create app-three file:///tmp/app-three-repo </dev/null 2>&1) && rc=0 || rc=$?
+assert_eq "app create runs without a terminal" 0 "$rc"
+site=$(cat "$INSTALL_DIR/apps/app-three/site.caddy" 2>/dev/null || true)
+assert_contains "site.caddy has the host" "$site" "app-three.test {"
+assert_contains "site.caddy proxies to the aliased service, streaming" "$site" "reverse_proxy app-three-web:80 {
+		import sse"
+assert_contains "site.caddy imports the security headers" "$site" "import security-headers"
+server=$(cat "$INSTALL_DIR/apps/app-three/compose.server.yml" 2>/dev/null || true)
+assert_contains "compose.server.yml aliases the service on the proxy network" "$server" "aliases:
+          - app-three-web"
+# shellcheck disable=SC2016 # the literal compose interpolation
+assert_contains "compose.server.yml names the proxy network by MD_WEB_NETWORK" "$server" 'name: ${MD_WEB_NETWORK:-web}'
+assert_not_contains "compose.server.yml has no traefik labels" "${server,,}" "traefik"
+
+out=$(app deploy app-three 2>&1) && rc=0 || rc=$?
+assert_eq "app deploy succeeds" 0 "$rc"
+assert_contains "app deploy reloads the proxy" "$out" "Caddy reloaded."
+assert_eq "app-three.test serves after the deploy" app-three "$(serves app-three.test)"
+assert_eq "Caddy was reloaded, not restarted" "$caddy_started" "$(started_at)"
+
+out=$(app proxy status 2>&1) && rc=0 || rc=$?
+assert_eq "app proxy status succeeds" 0 "$rc"
+assert_contains "status lists the app's host with the local CA's certificate expiry" \
+  "$(grep '^app-three ' <<< "$out")" "GMT (local)"
+assert_contains "app detail shows the site.caddy" "$(app detail app-three 2>&1)" "Proxy (site.caddy):"
+
+echo "# a deploy with a broken site.caddy"
+cp "$INSTALL_DIR/apps/app-three/site.caddy" /tmp/site.caddy.good
+printf 'app-three.test {\n\tnot_a_directive\n}\n' > "$INSTALL_DIR/apps/app-three/site.caddy"
+out=$(app deploy app-three 2>&1) && rc=0 || rc=$?
+assert_eq "the deploy fails" 1 "$rc"
+assert_contains "the deploy prints Caddy's error" "$out" "unrecognized directive: not_a_directive"
+assert_eq "app-one keeps serving" app-one "$(serves app-one.test)"
+assert_eq "app-three keeps its running route" app-three "$(serves app-three.test)"
+cp /tmp/site.caddy.good "$INSTALL_DIR/apps/app-three/site.caddy"
+
+echo "# validate's cross-app checks"
+printf 'on_demand_tls {\n\task http://app-two-web/ask\n}\n' > "$INSTALL_DIR/apps/app-two/global.caddy"
+out=$(app proxy validate 2>&1) && rc=0 || rc=$?
+assert_eq "a second on_demand_tls owner is refused" 1 "$rc"
+assert_contains "the refusal names both apps" "$out" "apps app-one app-two: more than one app defines on_demand_tls"
+rm "$INSTALL_DIR/apps/app-two/global.caddy"
+
+echo "# app delete"
+app down app-three >/dev/null 2>&1 || true
+out=$(printf 'y\n' | app delete app-three 2>&1) && rc=0 || rc=$?
+assert_eq "app delete succeeds" 0 "$rc"
+assert_contains "app delete reloads the proxy" "$out" "Caddy reloaded."
+assert_not_contains "the running config has no route for app-three" \
+  "$(docker exec "$CADDY" wget -qO- http://127.0.0.1:2019/config/)" "app-three.test"
+curl_run --cacert "$ROOT_CA" --resolve "app-three.test:443:$ip" https://app-three.test/ >/dev/null 2>&1 && rc=0 || rc=$?
+assert_eq "app-three.test is no longer served" 1 "$(( rc != 0 ))"
+assert_eq "app-two still serves" app-two "$(serves app-two.test)"
+assert_eq "Caddy was never restarted" "$caddy_started" "$(started_at)"
 
 for app in app-one app-two; do "$INSTALL_DIR/bin/app-compose" "$app" down >/dev/null 2>&1 || true; done
 (cd "$INSTALL_DIR/caddy" && docker compose down >/dev/null 2>&1) || true

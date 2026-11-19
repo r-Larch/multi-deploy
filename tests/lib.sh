@@ -9,7 +9,7 @@ TESTS_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT_DIR=$(cd "$TESTS_DIR/.." && pwd)
 export ROOT_DIR
 
-TEST_IMAGE=multi-deploy-test:28.3.2-1
+TEST_IMAGE=multi-deploy-test:28.3.2-2
 SHELLCHECK_IMAGE=koalaman/shellcheck:v0.10.0
 CADDY_IMAGE=caddy:2.11.9-alpine
 NGINX_IMAGE=nginx:1.27-alpine

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # app-deploy <name> <action>
-# Actions: update (change-detect up), deploy (build --pull + up -d --remove-orphans)
+# Actions: update (change-detect up), deploy (build --pull + up -d --remove-orphans + proxy reload)
 
 INSTALL_DIR=${INSTALL_DIR:-/opt/multi-deploy}
 APPS_DIR="${INSTALL_DIR}/apps"
@@ -31,6 +31,8 @@ case "$action" in
     fi
     "${compose_cmd[@]}" build --pull
     "${compose_cmd[@]}" up -d --remove-orphans
+    # A refused proxy config fails the deploy; Caddy keeps serving its running config.
+    "$INSTALL_DIR/bin/app-proxy" reload
     # Same post-deploy reclaim as the automated path (bin/deploy.sh).
     "$INSTALL_DIR/bin/docker-prune.sh" || true
     ;;

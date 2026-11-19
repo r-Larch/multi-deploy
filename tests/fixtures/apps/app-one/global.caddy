@@ -1,1 +1,3 @@
-grace_period 7s
+on_demand_tls {
+	ask http://app-one-web/ask
+}
