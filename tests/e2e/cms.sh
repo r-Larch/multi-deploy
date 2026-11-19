@@ -186,7 +186,12 @@ echo "    | issuer: $issuer; with X-Forwarded-Host: evil.test and X-Forwarded-Pr
 assert_eq "the issuer is the CMS origin" "https://$HOST/" "$issuer"
 assert_eq "forged X-Forwarded-Host and -Proto do not change the issuer" "https://$HOST/" "$forged_issuer"
 assert_eq "the discovery document is the same with the forged headers" "$plain" "$forged"
-assert_not_contains "the discovery document never names the forged host" "$forged" "evil.test"
+# The CMS pins the issuer but builds the endpoints from the forwarded host it trusts, so a forged
+# X-Forwarded-Host alone shows only there.
+host_only=$(discovery -H 'X-Forwarded-Host: evil.test') || host_only=""
+echo "    | token_endpoint: $(jq -r .token_endpoint <<< "$plain" 2>/dev/null); with X-Forwarded-Host: evil.test only: $(jq -r .token_endpoint <<< "$host_only" 2>/dev/null)"
+assert_eq "the discovery document is the same with a forged X-Forwarded-Host alone" "$plain" "$host_only"
+assert_not_contains "the discovery document never names the forged host" "$forged$host_only" "evil.test"
 
 echo "# the CMS smoke test (tests/e2e/smoke.mjs) through the shared Caddy"
 e2e="$APP_DIR/code/tests/e2e"
