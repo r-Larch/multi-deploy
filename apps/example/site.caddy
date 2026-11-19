@@ -1,0 +1,6 @@
+# Proxy config of example, imported by caddy/Caddyfile. Apply changes with: app proxy reload
+# Snippets defined here are named (example-…). No log directive: the root Caddyfile logs every site.
+example.test {
+	import security-headers
+	reverse_proxy example-app:8080
+}

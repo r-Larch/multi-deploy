@@ -1,13 +1,14 @@
-
+# Server override, included by compose.yml: the proxied service joins the proxy network as
+# example-app, the upstream in site.caddy.
 services:
   app:
-    # This file is used as an override in compose.yml
     networks:
-      - web
-    labels:
-      - "traefik.enable=true"
+      default: {}
+      web:
+        aliases:
+          - example-app
 
 networks:
   web:
     external: true
-    name: web
+    name: ${MD_WEB_NETWORK:-web}
