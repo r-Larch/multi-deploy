@@ -50,9 +50,35 @@ The installer will:
 
 - Install Docker (if missing)
 - Download this repository into `/opt/multi-deploy`
-- Ask for your Let's Encrypt email for Traefik and start Traefik on ports 80/443
-- Install systemd units for auto-deploy timers
+- Create the shared Docker network `web` (subnet `172.18.0.0/16`) if it is missing; an existing one is kept
+- Ask for your Let's Encrypt email and start the Caddy proxy (`caddy/`) on ports 80/443
+- Install systemd units for auto-deploy timers (skipped where systemd is absent)
 - Add `/opt/multi-deploy/bin` to PATH (new shells)
+
+On a host where a Traefik container runs, the installer updates the files but does not start
+Caddy; it points to `docs/UPGRADING.md` for the migration.
+
+Settings, passed as environment variables to the installer:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `MD_ACME_EMAIL` | prompt | Let's Encrypt account email, stored in `caddy/.env` |
+| `MD_WEB_SUBNET` | `172.18.0.0/16` | subnet of `web` when the installer creates it |
+| `MD_WEB_NETWORK` | `web` | name of the shared proxy network (stored in `caddy/.env`) |
+| `MD_CADDY_IMAGE` | `caddy:2.11.9-alpine` | Caddy image, e.g. a build with a DNS module (stored in `caddy/.env`) |
+| `REPO_REF` | `master` | branch or tag to install |
+
+```bash
+MD_ACME_EMAIL=you@example.com REPO_REF=v2 bash -c "$(curl -fsSL https://raw.githubusercontent.com/r-Larch/multi-deploy/refs/heads/master/setup.sh)"
+```
+
+The proxy reads `caddy/Caddyfile`, the shared snippets in `caddy/snippets/` (`security-headers`,
+`sse`) and each app's `apps/<name>/site.caddy` plus optional `apps/<name>/global.caddy`. App
+snippets are named `<name>-…`. The root Caddyfile sets no server timeouts: Caddy's defaults have
+no read or write limit, which long git pushes and large uploads through the proxy need.
+
+Tests (Docker required, everything runs in pinned containers): `./tests/run.sh` (shellcheck,
+unit tests, Caddyfile validation) and `./tests/e2e/run.sh` (fresh install with two sample apps).
 
 ### 2. Create Your First App
 
