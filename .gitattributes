@@ -1,0 +1,6 @@
+*.sh       text eol=lf
+bin/*      text eol=lf
+Caddyfile  text eol=lf
+*.caddy    text eol=lf
+*.yml      text eol=lf
+Dockerfile text eol=lf
