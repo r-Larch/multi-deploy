@@ -15,7 +15,9 @@ CADDY_IMAGE=caddy:2.11.9-alpine
 NGINX_IMAGE=nginx:1.27-alpine
 PYTHON_IMAGE=python:3.13-alpine
 CURL_IMAGE=curlimages/curl:8.11.1
-export TEST_IMAGE SHELLCHECK_IMAGE CADDY_IMAGE NGINX_IMAGE PYTHON_IMAGE CURL_IMAGE
+# The image traefik/docker-compose.yml of the v1 tag pins.
+TRAEFIK_IMAGE=traefik:v3.7.5
+export TEST_IMAGE SHELLCHECK_IMAGE CADDY_IMAGE NGINX_IMAGE PYTHON_IMAGE CURL_IMAGE TRAEFIK_IMAGE
 
 # Path of a host directory as the Docker daemon understands it (P:/… on Docker Desktop).
 host_path() {

@@ -2,7 +2,7 @@
 # Multi-deploy app manager
 # Usage:
 #   app create [name]      # interactive app setup (name optional)
-#   app delete <name>      # disable timer, delete app, reload the proxy
+#   app delete <name>      # disable timer, stop the stack, delete app, reload the proxy
 #   app update <name>      # git fetch/pull if changed, then up (no forced rebuild)
 #   app deploy <name>      # build & up (force deploy)
 #   app up <name>          # compose up -d
@@ -14,8 +14,8 @@
 #   app pull <name>        # only git fetch/reset to origin/<branch>
 #   app shell <name> <svc> # open shell in running container
 #   app run <name> ...args # run raw docker compose args
-#   app proxy <validate|reload|status|logs> # the shared Caddy proxy
-#   app migrate-proxy <name> [--write] # Traefik labels to site.caddy
+#   app proxy <validate|reload|status|logs|cutover|rollback|cleanup-traefik> # the shared Caddy proxy
+#   app migrate-proxy <name> [--write|--drop-labels] # Traefik labels to site.caddy
 set -euo pipefail
 
 INSTALL_DIR=${INSTALL_DIR:-/opt/multi-deploy}
@@ -322,6 +322,11 @@ cmd_remove() {
     if systemctl is-enabled "multi-deploy@${name}.timer" >/dev/null 2>&1; then
       systemctl disable --now "multi-deploy@${name}.timer" || true
     fi
+    # Containers and networks go; named volumes stay (docker volume ls to find them).
+    if ! "$INSTALL_DIR/bin/app-compose" "$name" down; then
+      red "docker compose down failed for $name; nothing was deleted."
+      exit 1
+    fi
     rm -rf "$dir"
     echo "Deleted $name"
     # Its site.caddy and global.caddy went with the directory; the proxy drops the routes.
@@ -341,7 +346,7 @@ cmd_down() { local n=${1:-}; [[ -z "$n" ]] && { red "Usage: $(basename "$0") dow
 cmd_pull() { local n=${1:-}; [[ -z "$n" ]] && { red "Usage: $(basename "$0") pull <name>"; exit 1; }; "$INSTALL_DIR/bin/app-git" "$n" pull; }
 cmd_git() { local n=${1:-}; shift || true; [[ -z "$n" ]] && { red "Usage: $(basename "$0") git <name> <git-command>"; exit 1; }; "$INSTALL_DIR/bin/app-git" "$n" "$@"; }
 cmd_proxy() { "$INSTALL_DIR/bin/app-proxy" "$@"; }
-cmd_migrate_proxy() { local n=${1:-}; [[ -n "$n" ]] || { red "Usage: $(basename "$0") migrate-proxy <name> [--write]"; exit 1; }; "$INSTALL_DIR/bin/app-migrate-proxy" "$@"; }
+cmd_migrate_proxy() { local n=${1:-}; [[ -n "$n" ]] || { red "Usage: $(basename "$0") migrate-proxy <name> [--write|--drop-labels]"; exit 1; }; "$INSTALL_DIR/bin/app-migrate-proxy" "$@"; }
 cmd_prune() { "$INSTALL_DIR/bin/docker-prune.sh" "$@"; }
 cmd_run() { local n=${1:-}; shift || true; [[ -z "$n" ]] && { red "Usage: $(basename "$0") run <name> <compose-args...>"; exit 1; }; "$INSTALL_DIR/bin/app-compose" "$n" "$@"; }
 cmd_shell() { local n=${1:-}; local svc=${2:-}; [[ -z "$n" || -z "$svc" ]] && { red "Usage: $(basename "$0") shell <name> <service>"; exit 1; }; "$INSTALL_DIR/bin/app-compose" "$n" exec -it "$svc" sh; }
@@ -507,7 +512,7 @@ usage() {
   cat <<USAGE
 Usage:
   $(basename "$0") create [name]     # interactive app setup
-  $(basename "$0") delete <name>     # disable timer, delete app, reload the proxy
+  $(basename "$0") delete <name>     # disable timer, stop the stack (volumes stay), delete app, reload the proxy
   $(basename "$0") timers <name> [on|off] # get/set timer state
   $(basename "$0") update <name>     # git fetch/pull if changed, then up
   $(basename "$0") deploy <name>     # build & up (force deploy)
@@ -524,7 +529,8 @@ Usage:
   $(basename "$0") run <name> ...    # run raw docker compose args
   $(basename "$0") prune [--days N] [--volumes] # reclaim unused docker data (default: older than 5d)
   $(basename "$0") proxy <validate|reload|status|logs> # check, reload, inspect the Caddy proxy
-  $(basename "$0") migrate-proxy <name> [--write] # translate Traefik labels to site.caddy (dry run without --write)
+  $(basename "$0") proxy <cutover|rollback|cleanup-traefik> # move from Traefik to Caddy (docs/UPGRADING.md)
+  $(basename "$0") migrate-proxy <name> [--write|--drop-labels] # translate Traefik labels to site.caddy (dry run without --write)
 USAGE
 }
 

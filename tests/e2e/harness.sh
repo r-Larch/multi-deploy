@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # Runs inside the e2e harness container (see tests/e2e/run.sh), with the host Docker socket,
-# this checkout at /src (read-only) and the install volume at $MD_TEST_MOUNT.
+# this checkout at /src (read-only), the install volume at $MD_TEST_MOUNT, the v1 install volume at
+# $MD_TEST_V1_MOUNT and the v1 tag as /v1/v1.tar.
 set -euo pipefail
 
 # shellcheck source=tests/assert.sh
 source /src/tests/assert.sh
 
 : "${MD_TEST_RUN:?}" "${MD_TEST_LABEL:?}" "${MD_TEST_VOLUME:?}" "${MD_TEST_MOUNT:?}"
+: "${MD_TEST_V1_VOLUME:?}" "${MD_TEST_V1_MOUNT:?}"
 : "${MD_TEST_NETWORK:?}" "${MD_TEST_SUBNET:?}" "${MD_TEST_ALT_SUBNET:?}"
-: "${CADDY_IMAGE:?}" "${NGINX_IMAGE:?}" "${CURL_IMAGE:?}"
+: "${CADDY_IMAGE:?}" "${NGINX_IMAGE:?}" "${CURL_IMAGE:?}" "${TRAEFIK_IMAGE:?}"
 
 export INSTALL_DIR="$MD_TEST_MOUNT/opt/multi-deploy"
 export MD_WEB_NETWORK="$MD_TEST_NETWORK" MD_WEB_SUBNET="$MD_TEST_SUBNET"
@@ -43,7 +45,8 @@ caddy_state() { local s; s=$(docker inspect -f '{{.State.Running}}' "$CADDY" 2>/
 subnet_of() { local s; s=$(docker network inspect -f '{{range .IPAM.Config}}{{.Subnet}}{{end}}' "$1" 2>/dev/null) || s=absent; echo "$s"; }
 curl_run() {
   docker run --rm --label "$MD_TEST_LABEL" --network "$MD_WEB_NETWORK" --user 0 \
-    -v "$MD_TEST_VOLUME:$MD_TEST_MOUNT:ro" "$CURL_IMAGE" -sS --max-time 10 "$@"
+    -v "$MD_TEST_VOLUME:$MD_TEST_MOUNT:ro" -v "$MD_TEST_V1_VOLUME:$MD_TEST_V1_MOUNT:ro" \
+    "$CURL_IMAGE" -sS --max-time 10 "$@"
 }
 
 if [[ -n "$(docker ps -q --filter label=com.docker.compose.project=traefik)" ]]; then
@@ -197,9 +200,10 @@ assert_contains "the refusal names both apps" "$out" "apps app-one app-two: more
 rm "$INSTALL_DIR/apps/app-two/global.caddy"
 
 echo "# app delete"
-app down app-three >/dev/null 2>&1 || true
+assert_eq "app-three runs before the delete" 1 "$(docker ps -q --filter label=com.docker.compose.project=app-three | wc -l)"
 out=$(printf 'y\n' | app delete app-three 2>&1) && rc=0 || rc=$?
 assert_eq "app delete succeeds" 0 "$rc"
+assert_eq "app delete stops and removes the app's containers" "" "$(docker ps -aq --filter label=com.docker.compose.project=app-three)"
 assert_contains "app delete reloads the proxy" "$out" "Caddy reloaded."
 assert_not_contains "the running config has no route for app-three" \
   "$(docker exec "$CADDY" wget -qO- http://127.0.0.1:2019/config/)" "app-three.test"
@@ -220,6 +224,7 @@ assert_cmd "the dry run writes no site.caddy" test ! -e "$INSTALL_DIR/apps/www-a
 for app in sse-healthcheck www-apex; do
   out=$(app migrate-proxy "$app" --write 2>&1) && rc=0 || rc=$?
   assert_eq "$app: migrate-proxy --write succeeds" 0 "$rc"
+  assert_contains "$app: --write keeps the Traefik labels" "$(cat "$INSTALL_DIR/apps/$app/compose.server.yml")" "traefik.http.routers."
   assert_cmd "$app: the original is kept as compose.server.yml.traefik.bak" \
     cmp -s "/src/tests/fixtures/migrate/$app/compose.server.yml" "$INSTALL_DIR/apps/$app/compose.server.yml.traefik.bak"
   out=$(app deploy "$app" 2>&1) && rc=0 || rc=$?
@@ -270,6 +275,208 @@ assert_eq "example-c.test redirects http to https" "308 https://example-c.test/"
 for app in sse-healthcheck www-apex; do "$INSTALL_DIR/bin/app-compose" "$app" down >/dev/null 2>&1 || true; done
 for app in app-one app-two; do "$INSTALL_DIR/bin/app-compose" "$app" down >/dev/null 2>&1 || true; done
 (cd "$INSTALL_DIR/caddy" && docker compose down >/dev/null 2>&1) || true
+
+echo "# upgrade: a v1 install (the 1.1.0 tag) with Traefik and two apps"
+V1="$MD_TEST_V1_MOUNT/opt/multi-deploy"
+V1_ROOT_CA="$V1/caddy/data/caddy-data/caddy/pki/authorities/local/root.crt"
+TRAEFIK="md-test-traefik-$MD_TEST_RUN"
+HOST_A=auth.example-d.test
+HOST_B=auth-preprod.example-d.test
+mkdir -p "$V1"
+tar -xf /v1/v1.tar -C "$V1"
+# As v1's setup.sh does after its sync.
+find "$V1/bin" -type f -exec chmod +x {} +
+assert_cmd "v1 has Traefik" test -f "$V1/traefik/docker-compose.yml"
+assert_cmd "v1 has no Caddy" test ! -e "$V1/caddy"
+
+# Test-only additions next to v1's traefik/docker-compose.yml (the 1.1.0 files stay as they are):
+# no host ports, the run label, the test network, and a static config that watches only this run's
+# containers and whose ACME directory is unreachable, so Traefik serves its default certificate.
+cat > "$V1/traefik/compose.override.yml" <<EOF
+services:
+  traefik:
+    container_name: $TRAEFIK
+    ports: !reset []
+    labels:
+      - "multi-deploy.test=$MD_TEST_RUN"
+    volumes:
+      - ./test-traefik.yml:/etc/traefik/traefik.yml:ro
+
+networks:
+  web:
+    name: $MD_TEST_NETWORK
+EOF
+cat > "$V1/traefik/test-traefik.yml" <<EOF
+providers:
+  docker:
+    exposedByDefault: false
+    network: $MD_TEST_NETWORK
+    constraints: "Label(\`multi-deploy.test\`,\`$MD_TEST_RUN\`)"
+  file:
+    filename: /etc/traefik/dynamic.yml
+entryPoints:
+  web:
+    address: ":80"
+  websecure:
+    address: ":443"
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      email: e2e@example.test
+      caServer: https://127.0.0.1:9/directory
+      storage: /letsencrypt/acme.json
+      httpChallenge:
+        entryPoint: web
+EOF
+
+# plain-a and plain-b of the migrate fixtures, on the test network, with an app that answers its name.
+for app in plain-a plain-b; do
+  cp -r "/src/tests/fixtures/migrate/$app" "$V1/apps/"
+  rm -f "$V1/apps/$app"/expected.*
+  sed -i "s/^    name: web\$/    name: $MD_TEST_NETWORK/; s/traefik.docker.network=web/traefik.docker.network=$MD_TEST_NETWORK/" \
+    "$V1/apps/$app/compose.server.yml"
+  cat > "$V1/apps/$app/code/compose.yml" <<EOF
+services:
+  mongo:
+    image: $NGINX_IMAGE
+    command: ["sleep", "86400"]
+    labels:
+      multi-deploy.test: "$MD_TEST_RUN"
+  backend:
+    image: $NGINX_IMAGE
+    command: ["sleep", "86400"]
+    labels:
+      multi-deploy.test: "$MD_TEST_RUN"
+  nginx:
+    image: $NGINX_IMAGE
+    command: ["/bin/sh", "-c", "echo $app > /usr/share/nginx/html/index.html && sed -i 's/80;/8080;/' /etc/nginx/conf.d/default.conf && exec nginx -g 'daemon off;'"]
+    labels:
+      multi-deploy.test: "$MD_TEST_RUN"
+
+networks:
+  default:
+    labels:
+      multi-deploy.test: "$MD_TEST_RUN"
+EOF
+done
+
+(cd "$V1/traefik" && docker compose up -d --quiet-pull) >/dev/null 2>&1 && rc=0 || rc=$?
+assert_eq "v1's Traefik starts" 0 "$rc"
+for app in plain-a plain-b; do
+  INSTALL_DIR="$V1" "$V1/bin/app-compose" "$app" up -d --quiet-pull >/dev/null 2>&1 && rc=0 || rc=$?
+  assert_eq "$app starts through v1's bin/app-compose" 0 "$rc"
+done
+
+ip_of() { docker inspect -f "{{(index .NetworkSettings.Networks \"$MD_WEB_NETWORK\").IPAddress}}" "$1" 2>/dev/null || true; }
+# via <ip> <host> [curl-args]: "<body>|<status>" of https://<host>/ through the proxy at <ip>,
+# retried for up to 30 s until the status is 200.
+via() {
+  local ip="$1" host="$2" r=""
+  shift 2
+  for _ in $(seq 1 30); do
+    r=$(curl_run -w '|%{http_code}' "$@" --resolve "$host:443:$ip" "https://$host/" 2>/dev/null) && [[ "$r" == *"|200" ]] && break
+    sleep 1
+  done
+  echo "${r//$'\n'/}"
+}
+by_traefik() { via "$(ip_of "$TRAEFIK")" "$1" -k; }
+by_caddy() { via "$(ip_of "$CADDY")" "$1" --cacert "$V1_ROOT_CA"; }
+traefik_running() { docker ps -q --filter label=com.docker.compose.project=traefik | wc -l; }
+v2() { INSTALL_DIR="$V1" "$V1/bin/app" "$@"; }
+# show <output>: the operator-visible output in the test log.
+show() { local l; while IFS= read -r l; do echo "    | $l"; done <<< "$1"; }
+
+assert_eq "v1: Traefik serves $HOST_A" "plain-a|200" "$(by_traefik "$HOST_A")"
+assert_eq "v1: Traefik serves $HOST_B" "plain-b|200" "$(by_traefik "$HOST_B")"
+
+echo "# upgrade: setup.sh installs v2 while Traefik runs"
+mkdir -p "$V1/caddy"
+cp "$INSTALL_DIR/caddy/compose.override.yml" "$INSTALL_DIR/caddy/test.caddy" "$V1/caddy/"
+out=$(INSTALL_DIR="$V1" run_setup) && rc=0 || rc=$?
+assert_eq "setup.sh succeeds" 0 "$rc"
+assert_contains "setup.sh leaves Caddy for the cutover" "$out" "Caddy was NOT started"
+assert_eq "Caddy is not started" absent "$(caddy_state)"
+printf '#!/bin/sh\necho "docker-prune.sh skipped in the e2e harness"\n' > "$V1/bin/docker-prune.sh"
+
+out=$(v2 deploy plain-a 2>&1) && rc=0 || rc=$?
+assert_eq "app deploy works between the v2 install and the cutover" 0 "$rc"
+assert_contains "the deploy skips the Caddy reload while Traefik serves" "$out" \
+  "Proxy not migrated to Caddy yet: Traefik ($TRAEFIK) is serving, so the Caddy reload was skipped"
+assert_eq "Traefik serves $HOST_A after the deploy" "plain-a|200" "$(by_traefik "$HOST_A")"
+
+echo "# upgrade: migrate-proxy --write and deploy, while Traefik serves"
+for app in plain-a plain-b; do
+  out=$(v2 migrate-proxy "$app" 2>&1) && rc=0 || rc=$?
+  assert_eq "$app: the dry run succeeds" 0 "$rc"
+  out=$(v2 migrate-proxy "$app" --write 2>&1) && rc=0 || rc=$?
+  assert_eq "$app: migrate-proxy --write succeeds" 0 "$rc"
+  out=$(v2 deploy "$app" 2>&1) && rc=0 || rc=$?
+  assert_eq "$app: app deploy succeeds (Caddy reload skipped)" 0 "$rc"
+done
+assert_eq "no prep downtime: Traefik serves $HOST_A from the redeployed app" "plain-a|200" "$(by_traefik "$HOST_A")"
+assert_eq "no prep downtime: Traefik serves $HOST_B from the redeployed app" "plain-b|200" "$(by_traefik "$HOST_B")"
+
+echo "# upgrade: app proxy cutover"
+export MD_PROXY_CA="$V1_ROOT_CA" MD_PROXY_HOST_TIMEOUT=60
+out=$(v2 proxy cutover 2>&1) && rc=0 || rc=$?
+show "$out"
+assert_eq "the cutover succeeds" 0 "$rc"
+assert_contains "the cutover prints its preflight" "$out" "ok   upstream plain-b-nginx:8080 resolves on $MD_TEST_NETWORK"
+assert_contains "the cutover checks each host through Caddy" "$out" "ok   $HOST_B: status 200 from $CADDY"
+assert_eq "Traefik is stopped" 0 "$(traefik_running)"
+assert_eq "Caddy serves $HOST_A over TLS with the local CA" "plain-a|200" "$(by_caddy "$HOST_A")"
+assert_eq "Caddy serves $HOST_B over TLS with the local CA" "plain-b|200" "$(by_caddy "$HOST_B")"
+
+echo "# upgrade: app proxy rollback"
+out=$(v2 proxy rollback 2>&1) && rc=0 || rc=$?
+show "$out"
+assert_eq "the rollback succeeds" 0 "$rc"
+assert_eq "Caddy is stopped" absent "$(caddy_state)"
+assert_eq "Traefik serves $HOST_A from the app again" "plain-a|200" "$(by_traefik "$HOST_A")"
+assert_eq "Traefik serves $HOST_B from the app again" "plain-b|200" "$(by_traefik "$HOST_B")"
+
+echo "# upgrade: a cutover whose host check fails rolls back"
+cp "$V1/apps/plain-b/site.caddy" /tmp/plain-b.site.caddy
+sed -i 's/plain-b-nginx:8080/plain-b-nginx:8081/' "$V1/apps/plain-b/site.caddy"
+out=$(MD_PROXY_HOST_TIMEOUT=10 v2 proxy cutover 2>&1) && rc=0 || rc=$?
+show "$out"
+assert_eq "the cutover fails" 1 "$rc"
+assert_contains "the failure names the host" "$out" "Cutover failed (hosts not served by Caddy) for: $HOST_B"
+assert_not_contains "the failure names only that host" "$out" "for: $HOST_A"
+assert_contains "the cutover rolls back by itself" "$out" "Rolled back: Traefik serves again; Caddy is stopped."
+assert_eq "Caddy is stopped after the automatic rollback" absent "$(caddy_state)"
+assert_eq "Traefik serves $HOST_A after the automatic rollback" "plain-a|200" "$(by_traefik "$HOST_A")"
+assert_eq "Traefik serves $HOST_B after the automatic rollback" "plain-b|200" "$(by_traefik "$HOST_B")"
+cp /tmp/plain-b.site.caddy "$V1/apps/plain-b/site.caddy"
+
+echo "# upgrade: cleanup-traefik and --drop-labels after a cutover"
+out=$(v2 proxy cleanup-traefik 2>&1) && rc=0 || rc=$?
+assert_eq "cleanup-traefik is refused while Traefik serves" 1 "$rc"
+out=$(v2 migrate-proxy plain-a --drop-labels 2>&1) && rc=0 || rc=$?
+assert_eq "--drop-labels is refused while Traefik serves" 1 "$rc"
+out=$(v2 proxy cutover 2>&1) && rc=0 || rc=$?
+assert_eq "the cutover succeeds" 0 "$rc"
+out=$(v2 proxy cleanup-traefik 2>&1) && rc=0 || rc=$?
+show "$out"
+assert_eq "cleanup-traefik succeeds" 0 "$rc"
+assert_eq "the Traefik container is gone" "" "$(docker ps -aq --filter label=com.docker.compose.project=traefik)"
+assert_cmd "traefik/letsencrypt is gone" test ! -e "$V1/traefik/letsencrypt"
+backups=("$V1"/backups/traefik-letsencrypt-*.tar.gz)
+assert_cmd "traefik/letsencrypt is kept as a tarball" test -f "${backups[0]}"
+assert_cmd "the traefik/ files stay" test -f "$V1/traefik/docker-compose.yml"
+out=$(v2 migrate-proxy plain-a --drop-labels 2>&1) && rc=0 || rc=$?
+assert_eq "--drop-labels succeeds after the cleanup" 0 "$rc"
+out=$(v2 deploy plain-a 2>&1) && rc=0 || rc=$?
+assert_eq "app deploy after --drop-labels succeeds" 0 "$rc"
+assert_contains "the deploy reloads Caddy" "$out" "Caddy reloaded."
+nginx=$(docker ps -q --filter label=com.docker.compose.project=plain-a --filter label=com.docker.compose.service=nginx)
+assert_not_contains "plain-a has no Traefik labels left" "$(docker inspect -f '{{json .Config.Labels}}' "$nginx")" "traefik."
+assert_eq "Caddy serves $HOST_A" "plain-a|200" "$(by_caddy "$HOST_A")"
+unset MD_PROXY_CA MD_PROXY_HOST_TIMEOUT
+
+for app in plain-a plain-b; do INSTALL_DIR="$V1" "$V1/bin/app-compose" "$app" down >/dev/null 2>&1 || true; done
+(cd "$V1/caddy" && docker compose down >/dev/null 2>&1) || true
+(cd "$V1/traefik" && docker compose down >/dev/null 2>&1) || true
 
 echo "# docker-prune.sh keeps images labelled multi-deploy.keep=true"
 # The prune is scoped to this run's label, so nothing outside the test can go.

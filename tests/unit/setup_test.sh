@@ -41,14 +41,17 @@ fresh() {
   export STUB="$WORK/stub-$1" INSTALL_DIR="$WORK/install-$1"
   rm -rf "$STUB" "$INSTALL_DIR"
   mkdir -p "$STUB" "$INSTALL_DIR/caddy"
+  cp -r "$SRC/bin" "$INSTALL_DIR/bin"
   : > "$STUB/calls"
 }
 
+# setup.sh as main() has it after fetch_repo: sourced, with the installed lib-app loaded.
 load_setup() {
   unset MD_WEB_NETWORK MD_WEB_SUBNET MD_ACME_EMAIL MD_CADDY_IMAGE MD_RESOURCE_LABEL
   export PATH="$WORK/bin:$PATH"
   # shellcheck source=setup.sh
   MD_SETUP_SOURCE_ONLY=1 source "$SRC/setup.sh"
+  load_lib
 }
 
 echo "# setup.sh: web network"

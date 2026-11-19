@@ -17,6 +17,7 @@ cp -r "$SRC/bin" "$INSTALL_DIR/bin"
 cat > "$WORK/bin/docker" <<'EOF'
 #!/usr/bin/env bash
 echo "docker $*" >> "$STUB/calls"
+[[ "$1" != inspect ]] || echo true
 exit 0
 EOF
 printf '#!/bin/sh\nexit 1\n' > "$WORK/bin/systemctl"
@@ -47,6 +48,22 @@ assert_eq "defaults to web without caddy/.env" "web" "$(network)"
 printf 'ACME_EMAIL=a@example.test\nMD_WEB_NETWORK=md-x\n' > "$INSTALL_DIR/caddy/.env"
 assert_eq "is read from caddy/.env" "md-x" "$(network)"
 assert_eq "the environment wins over caddy/.env" "md-y" "$(MD_WEB_NETWORK=md-y network)"
+
+echo "# app delete stops the stack before removing the app"
+
+: > "$STUB/calls"
+mkdir -p "$INSTALL_DIR/apps/app-del"
+printf 'NAME=app-del\nCOMPOSE_FILE=compose.yml\n' > "$INSTALL_DIR/apps/app-del/app.env"
+out=$(printf 'n\n' | "$INSTALL_DIR/bin/app" delete app-del 2>&1)
+assert_contains "app delete asks first" "$out" "Aborted"
+assert_eq "an aborted delete runs no compose command" "" "$(grep -- '--project-name app-del' "$STUB/calls" || true)"
+out=$(printf 'y\n' | "$INSTALL_DIR/bin/app" delete app-del 2>&1) && rc=0 || rc=$?
+assert_eq "app delete succeeds" 0 "$rc"
+assert_contains "app delete runs docker compose down on the app's stack" "$(cat "$STUB/calls")" \
+  "docker compose --project-name app-del -f $INSTALL_DIR/apps/app-del/compose.yml down"
+assert_not_contains "app delete keeps the volumes" "$(grep -- ' down' "$STUB/calls")" "-v"
+assert_cmd "app delete removes the app directory" test ! -e "$INSTALL_DIR/apps/app-del"
+assert_contains "app delete reloads the proxy" "$(cat "$STUB/calls")" "caddy reload"
 
 echo "# lib-app: default_read answers from the environment"
 

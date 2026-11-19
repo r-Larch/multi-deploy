@@ -10,6 +10,12 @@ services:
       web:
         aliases:
           - static-labels-site
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.static-labels.rule=Host(`static.example-j.test`)"
+      - "traefik.http.routers.static-labels.entrypoints=websecure"
+      - "traefik.http.routers.static-labels.tls.certresolver=letsencrypt"
+      - "traefik.http.services.static-labels.loadbalancer.server.port=8000"
     volumes:
       - ./data:/data
 

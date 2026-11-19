@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# app-migrate-proxy <name> [--write]
+# app-migrate-proxy <name> [--write|--drop-labels]
 # Translates the Traefik labels of an app into apps/<name>/site.caddy for the Caddy proxy.
 # Labels are read from the merged compose config (app-compose config), so labels in code/ count and
 # ${VAR}s are resolved. That config holds resolved env values: only labels, ports and networks are
@@ -9,8 +9,11 @@ set -euo pipefail
 # The file edited is the one holding the labels: compose.server.yml, or the app's own compose.yml
 # for a static app; labels in code/ are never edited, compose.server.yml gets the alias instead.
 # Without --write it prints the proposed site.caddy and the diff of that file. With --write it backs
-# the file up as <file>.traefik.bak, removes the traefik.* labels, puts the service on the proxy
-# network as <name>-<service>, and writes site.caddy.
+# the file up as <file>.traefik.bak, puts the service on the proxy network as <name>-<service>, and
+# writes site.caddy. The traefik.* labels stay, so Traefik keeps routing the app until the cutover
+# (and again after a rollback); they are inert under Caddy.
+# --drop-labels, once Caddy serves and Traefik is stopped, removes the traefik.* labels (backup
+# <file>.labels.bak).
 # Exit codes: 0 done (or nothing to migrate), 1 error, 2 TODOs or an unrecognised file shape
 # (nothing is written).
 
@@ -19,14 +22,15 @@ INSTALL_DIR=${INSTALL_DIR:-/opt/multi-deploy}
 # shellcheck disable=SC1091
 source "$INSTALL_DIR/bin/lib-app" || { echo "Missing $INSTALL_DIR/bin/lib-app" >&2; exit 1; }
 
-usage() { echo "Usage: $(basename "$0") <name> [--write]" >&2; }
+usage() { echo "Usage: $(basename "$0") <name> [--write|--drop-labels]" >&2; }
 
 name=${1:-}
-write=n
+mode=dry
 [[ -n "$name" ]] || { usage; exit 1; }
 case "${2:-}" in
   "") ;;
-  --write) write=y ;;
+  --write) mode="write" ;;
+  --drop-labels) mode="drop" ;;
   *) usage; exit 1 ;;
 esac
 
@@ -34,6 +38,162 @@ require_bin jq
 load_app "$name"
 SERVER_FILE="$APP_META_DIR/compose.server.yml"
 SITE_FILE="$APP_META_DIR/site.caddy"
+
+# --------------- Edit a compose file ---------------
+
+# edit_compose_file <file> <service> <alias> <networks> <net:0|1> <drop:0|1>
+# net=1: the service's networks as a map that aliases it on web, and a top-level web network named
+# ${MD_WEB_NETWORK:-web}; a missing service, networks key or web network is added; <networks>
+# (comma separated) are the service's networks in the merged config, used when the file names none.
+# drop=1: the file without the traefik.* labels (and their comment lines) of every service.
+# Every other line stays. Fails (exit 3, reason on stderr) on any other shape.
+edit_compose_file() {
+  awk -v svc="$2" -v alias="$3" -v merged="$4" -v net="$5" -v drop="$6" '
+    function fail(msg) { print msg > "/dev/stderr"; failed = 1; exit 3 }
+    function ind(s) { return match(s, /[^ ]/) - 1 }
+    function key(s) { sub(/^ */, "", s); sub(/:.*/, "", s); return s }
+    function web_net() { print "  web:"; print "    external: true"; print "    name: ${MD_WEB_NETWORK:-web}" }
+    function nets_map(   i, has_web) {
+      for (i = 1; i <= nn; i++) {
+        if (nets[i] == "web") has_web = 1
+        else print "      " nets[i] ": {}"
+      }
+      print "      web:"; print "        aliases:"; print "          - " alias
+    }
+    function merged_nets() { nn = split(merged, nets, ",") }
+    function end_labels(   i, j) {
+      j = nb
+      while (j > 0 && buf[j] ~ /^[ \t]*$/) j--
+      for (i = j + 1; i <= nb; i++) print buf[i]
+      nb = 0; mode = ""
+    }
+    /\r$/ { fail("the file has CRLF line endings") }
+    {
+      line = $0
+      blank = line ~ /^[ \t]*$/
+      comment = line ~ /^[ \t]*#/
+      if (!blank && !comment && line ~ /^ *\t/) fail("the file indents with tabs")
+      i = (blank || comment) ? -1 : ind(line)
+    }
+    NR == FNR {
+      if (!net) next
+      if (i == 0) { top = key(line); cur = ""; tn = "" }
+      if (i == 0 && top == "services") p_services = 1
+      if (i == 0 && top == "networks") p_networks = 1
+      if (top == "services" && i == 2) { cur = key(line); if (cur == svc) p_svc = 1 }
+      if (top == "services" && cur == svc && i == 4 && key(line) == "networks") p_nets = 1
+      if (top == "networks" && i == 2) { tn = key(line); if (tn == "web") p_web = 1 }
+      if (top == "networks" && tn == "web" && i == 4 && key(line) == "name") p_name = 1
+      next
+    }
+    {
+      if (mode == "labels") {
+        if (blank || comment) { buf[++nb] = line; next }
+        if (i >= 6) {
+          item = line; sub(/^ */, "", item)
+          t = item; sub(/^-[ \t]*/, "", t); gsub(/["'"'"']/, "", t)
+          if (t ~ /^traefik\./) { nb = 0; next }
+          if (!hdr_out) { print hdr; hdr_out = 1 }
+          for (k = 1; k <= nb; k++) print buf[k]
+          nb = 0; print line; next
+        }
+        end_labels()
+      }
+      if (mode == "nets") {
+        if (i >= 6) {
+          item = line; sub(/^ */, "", item)
+          gsub(/["'"'"' ]/, "", item)
+          if (item !~ /^-[A-Za-z0-9_.-]+$/) fail("the networks of " svc " are not a plain list")
+          sub(/^-/, "", item)
+          nets[++nn] = item; next
+        }
+        if (blank || comment) fail("the networks list of " svc " has a blank or comment line")
+        nets_map(); mode = ""
+      }
+
+      if (net && i == 0 && !p_services && !added_services) {
+        print "services:"; print "  " svc ":"; print "    networks:"; merged_nets(); nets_map(); print ""
+        added_services = 1
+      }
+      if (i == 0) { top = key(line); cur = ""; tn = "" }
+      if (top == "services" && i == 2) cur = key(line)
+      if (drop && top == "services" && i == 4) {
+        if (line ~ /^    labels: *$/) { mode = "labels"; hdr = line; hdr_out = 0; nb = 0; next }
+        if (line ~ /^    labels:/) fail("the labels of " cur " are not a block list")
+      }
+      if (net && top == "services" && cur == svc && i == 4) {
+        if (line ~ /^    networks: *$/) { mode = "nets"; nn = 0; print line; next }
+        if (line ~ /^    networks:/) fail("the networks of " svc " are not a block list")
+      }
+      if (top == "networks" && i == 2) tn = key(line)
+      if (net && top == "networks" && tn == "web" && i == 4 && key(line) == "name") {
+        print "    name: ${MD_WEB_NETWORK:-web}"; next
+      }
+      print line
+      if (!net) next
+      if (i == 0 && top == "services" && !p_svc) {
+        print "  " svc ":"; print "    networks:"; merged_nets(); nets_map()
+      }
+      if (i == 2 && top == "services" && cur == svc && !p_nets) { print "    networks:"; merged_nets(); nets_map() }
+      if (i == 0 && top == "networks" && !p_web) web_net()
+      if (i == 2 && top == "networks" && tn == "web" && !p_name) print "    name: ${MD_WEB_NETWORK:-web}"
+    }
+    END {
+      if (failed) exit 3
+      if (mode == "labels") end_labels()
+      if (mode == "nets") nets_map()
+      if (net && !p_services && !added_services) fail("the file has no top-level key")
+      if (net && !p_networks) { print ""; print "networks:"; web_net() }
+    }
+  ' "$1" "$1"
+}
+
+# has_labels <file>: the file has a traefik.* line outside comments.
+has_labels() { [[ -f "$1" ]] && grep -qE '^[^#]*traefik\.' "$1"; }
+
+# code_has_labels: a compose file in code/ has traefik.* lines.
+code_has_labels() {
+  [[ -d "$APP_REPO_DIR" ]] && find "$APP_REPO_DIR" \( -name .git -o -name node_modules \) -prune -o -type f \( -name '*.yml' -o -name '*.yaml' \) -print \
+    | while IFS= read -r f; do has_labels "$f" && echo "$f"; done | grep -q .
+}
+
+# --------------- Drop the labels (after the cutover) ---------------
+
+if [[ "$mode" == drop ]]; then
+  if ! caddy_running || [[ -n "$(running_traefik)" ]]; then
+    red "--drop-labels needs Caddy running and Traefik stopped (after app proxy cutover)." >&2
+    exit 1
+  fi
+  [[ -f "$SITE_FILE" ]] || { red "$SITE_FILE is missing: migrate $NAME first (app migrate-proxy $NAME --write)." >&2; exit 1; }
+  if has_labels "$SERVER_FILE"; then
+    EDIT_FILE=$SERVER_FILE
+  elif [[ "$APP_COMPOSE_FILE" != "$SERVER_FILE" ]] && has_labels "$APP_COMPOSE_FILE"; then
+    EDIT_FILE=$APP_COMPOSE_FILE
+  elif code_has_labels; then
+    echo "The Traefik labels of $NAME live in code/, which is not edited; remove them in the app repo."
+    exit 0
+  else
+    echo "No Traefik labels in apps/$NAME; nothing to drop."
+    exit 0
+  fi
+  EDIT_NAME=$(basename "$EDIT_FILE")
+  WORK=$(mktemp -d)
+  trap 'rm -rf "$WORK"' EXIT
+  if ! edit_compose_file "$EDIT_FILE" "" "" "" 0 1 > "$WORK/edited" 2> "$WORK/edit.err"; then
+    red "$EDIT_NAME has a shape migrate-proxy does not edit: $(cat "$WORK/edit.err"); nothing was written." >&2
+    exit 2
+  fi
+  if has_labels "$WORK/edited"; then
+    red "$EDIT_NAME keeps traefik.* lines outside the block lists of labels; remove them by hand. Nothing was written." >&2
+    exit 2
+  fi
+  cp -p "$EDIT_FILE" "$EDIT_FILE.labels.bak"
+  diff -u -L "$EDIT_NAME" -L "$EDIT_NAME (labels dropped)" "$EDIT_FILE" "$WORK/edited" || true
+  cat "$WORK/edited" > "$EDIT_FILE"
+  echo "Removed the Traefik labels from $EDIT_NAME (backup: $EDIT_NAME.labels.bak)"
+  echo "Next: app deploy $NAME"
+  exit 0
+fi
 
 TODOS=()
 todo() { local t; for t in "${TODOS[@]}"; do [[ "$t" != "$*" ]] || return 0; done; TODOS+=("$*"); }
@@ -59,6 +219,12 @@ if (( ${#services[@]} > 1 )); then
 fi
 SVC=${services[0]}
 ALIAS="$NAME-$SVC"
+
+aliased=$(jq -r --arg s "$SVC" --arg a "$ALIAS" '(.services[$s].networks.web.aliases // []) | index($a) != null' <<< "$config_json")
+if [[ "$aliased" == true && -f "$SITE_FILE" ]]; then
+  echo "$NAME is migrated: site.caddy exists and $SVC is aliased $ALIAS; its Traefik labels are inert under Caddy."
+  exit 0
+fi
 
 declare -A R_RULE=() R_EP=() R_MW=() R_SVC=()
 declare -A S_PORT=() S_SSE=() S_HC=()
@@ -368,112 +534,6 @@ render_site() {
   done
 }
 
-# --------------- Edit the compose file ---------------
-
-# edit_compose_file <file> <service> <alias> <networks>: the file without the service's traefik.*
-# labels (and their comment lines), with the service's networks as a map that aliases it on web,
-# and a top-level web network named ${MD_WEB_NETWORK:-web}. A missing service, networks key or web
-# network is added; <networks> (comma separated) are the service's networks in the merged config,
-# used when the file names none. Fails (exit 3, reason on stderr) on any other shape.
-edit_compose_file() {
-  awk -v svc="$2" -v alias="$3" -v merged="$4" '
-    function fail(msg) { print msg > "/dev/stderr"; failed = 1; exit 3 }
-    function ind(s) { return match(s, /[^ ]/) - 1 }
-    function key(s) { sub(/^ */, "", s); sub(/:.*/, "", s); return s }
-    function web_net() { print "  web:"; print "    external: true"; print "    name: ${MD_WEB_NETWORK:-web}" }
-    function nets_map(   i, has_web) {
-      for (i = 1; i <= nn; i++) {
-        if (nets[i] == "web") has_web = 1
-        else print "      " nets[i] ": {}"
-      }
-      print "      web:"; print "        aliases:"; print "          - " alias
-    }
-    function merged_nets() { nn = split(merged, nets, ",") }
-    function end_labels(   i, j) {
-      j = nb
-      while (j > 0 && buf[j] ~ /^[ \t]*$/) j--
-      for (i = j + 1; i <= nb; i++) print buf[i]
-      nb = 0; mode = ""
-    }
-    /\r$/ { fail("the file has CRLF line endings") }
-    {
-      line = $0
-      blank = line ~ /^[ \t]*$/
-      comment = line ~ /^[ \t]*#/
-      if (!blank && !comment && line ~ /^ *\t/) fail("the file indents with tabs")
-      i = (blank || comment) ? -1 : ind(line)
-    }
-    NR == FNR {
-      if (i == 0) { top = key(line); cur = ""; tn = "" }
-      if (i == 0 && top == "services") p_services = 1
-      if (i == 0 && top == "networks") p_networks = 1
-      if (top == "services" && i == 2) { cur = key(line); if (cur == svc) p_svc = 1 }
-      if (top == "services" && cur == svc && i == 4 && key(line) == "networks") p_nets = 1
-      if (top == "networks" && i == 2) { tn = key(line); if (tn == "web") p_web = 1 }
-      if (top == "networks" && tn == "web" && i == 4 && key(line) == "name") p_name = 1
-      next
-    }
-    {
-      if (mode == "labels") {
-        if (blank || comment) { buf[++nb] = line; next }
-        if (i >= 6) {
-          item = line; sub(/^ */, "", item)
-          t = item; sub(/^-[ \t]*/, "", t); gsub(/["'"'"']/, "", t)
-          if (t ~ /^traefik\./) { nb = 0; next }
-          if (!hdr_out) { print hdr; hdr_out = 1 }
-          for (k = 1; k <= nb; k++) print buf[k]
-          nb = 0; print line; next
-        }
-        end_labels()
-      }
-      if (mode == "nets") {
-        if (i >= 6) {
-          item = line; sub(/^ */, "", item)
-          gsub(/["'"'"' ]/, "", item)
-          if (item !~ /^-[A-Za-z0-9_.-]+$/) fail("the networks of " svc " are not a plain list")
-          sub(/^-/, "", item)
-          nets[++nn] = item; next
-        }
-        if (blank || comment) fail("the networks list of " svc " has a blank or comment line")
-        nets_map(); mode = ""
-      }
-
-      if (i == 0 && !p_services && !added_services) {
-        print "services:"; print "  " svc ":"; print "    networks:"; merged_nets(); nets_map(); print ""
-        added_services = 1
-      }
-      if (i == 0) { top = key(line); cur = ""; tn = "" }
-      if (top == "services" && i == 2) cur = key(line)
-      if (top == "services" && cur == svc && i == 4) {
-        if (line ~ /^    labels: *$/) { mode = "labels"; hdr = line; hdr_out = 0; nb = 0; next }
-        if (line ~ /^    networks: *$/) { mode = "nets"; nn = 0; print line; next }
-        if (line ~ /^    (labels|networks):/) fail("the " key(line) " of " svc " are not a block list")
-      }
-      if (top == "networks" && i == 2) tn = key(line)
-      if (top == "networks" && tn == "web" && i == 4 && key(line) == "name") {
-        print "    name: ${MD_WEB_NETWORK:-web}"; next
-      }
-      print line
-      if (i == 0 && top == "services" && !p_svc) {
-        print "  " svc ":"; print "    networks:"; merged_nets(); nets_map()
-      }
-      if (i == 2 && top == "services" && cur == svc && !p_nets) { print "    networks:"; merged_nets(); nets_map() }
-      if (i == 0 && top == "networks" && !p_web) web_net()
-      if (i == 2 && top == "networks" && tn == "web" && !p_name) print "    name: ${MD_WEB_NETWORK:-web}"
-    }
-    END {
-      if (failed) exit 3
-      if (mode == "labels") end_labels()
-      if (mode == "nets") nets_map()
-      if (!p_services && !added_services) fail("the file has no top-level key")
-      if (!p_networks) { print ""; print "networks:"; web_net() }
-    }
-  ' "$1" "$1"
-}
-
-# has_labels <file>: the file has a traefik.* line outside comments.
-has_labels() { [[ -f "$1" ]] && grep -qE '^[^#]*traefik\.' "$1"; }
-
 # The file that gets the edit: the one holding the labels, or compose.server.yml when the labels
 # live in code/ (never edited; they stay there and are inert without Traefik).
 EDIT_FILE=""
@@ -481,13 +541,8 @@ if has_labels "$SERVER_FILE"; then
   EDIT_FILE=$SERVER_FILE
 elif [[ "$APP_COMPOSE_FILE" != "$SERVER_FILE" ]] && has_labels "$APP_COMPOSE_FILE"; then
   EDIT_FILE=$APP_COMPOSE_FILE
-elif [[ -d "$APP_REPO_DIR" ]] && find "$APP_REPO_DIR" \( -name .git -o -name node_modules \) -prune -o -type f \( -name '*.yml' -o -name '*.yaml' \) -print \
-    | while IFS= read -r f; do has_labels "$f" && echo "$f"; done | grep -q .; then
-  aliased=$(jq -r --arg s "$SVC" --arg a "$ALIAS" '(.services[$s].networks.web.aliases // []) | index($a) != null' <<< "$config_json")
-  if [[ "$aliased" == true && -f "$SITE_FILE" ]]; then
-    echo "$NAME is migrated: site.caddy exists and $SVC is aliased $ALIAS; its Traefik labels in code/ are inert."
-    exit 0
-  elif [[ -f "$SERVER_FILE" ]] && grep -q 'compose\.server\.yml' "$APP_COMPOSE_FILE"; then
+elif code_has_labels; then
+  if [[ -f "$SERVER_FILE" ]] && grep -q 'compose\.server\.yml' "$APP_COMPOSE_FILE"; then
     EDIT_FILE=$SERVER_FILE
     info "the Traefik labels of $SVC live in code/, which is not edited: they stay there, inert without Traefik"
   else
@@ -504,10 +559,8 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 render_site > "$WORK/site.caddy"
 if [[ -n "$EDIT_FILE" ]]; then
-  if ! edit_compose_file "$EDIT_FILE" "$SVC" "$ALIAS" "$merged_nets" > "$WORK/edited" 2> "$WORK/edit.err"; then
+  if ! edit_compose_file "$EDIT_FILE" "$SVC" "$ALIAS" "$merged_nets" 1 0 > "$WORK/edited" 2> "$WORK/edit.err"; then
     todo "$EDIT_NAME has a shape migrate-proxy does not edit: $(cat "$WORK/edit.err")"
-  elif has_labels "$WORK/edited"; then
-    todo "$EDIT_NAME keeps traefik.* lines outside the labels of $SVC; remove them by hand"
   fi
 fi
 
@@ -517,7 +570,7 @@ if (( ${#TODOS[@]} > 0 )); then
   exit 2
 fi
 
-if [[ "$write" == n ]]; then
+if [[ "$mode" == dry ]]; then
   bold "apps/$NAME/site.caddy (proposed)"
   cat "$WORK/site.caddy"
   bold "apps/$NAME/$EDIT_NAME (changes)"
@@ -533,4 +586,4 @@ cat "$WORK/edited" > "$EDIT_FILE"
 cp "$WORK/site.caddy" "$SITE_FILE"
 echo "Backed up $EDIT_NAME to $(basename "$BACKUP_FILE")"
 echo "Wrote $SITE_FILE and migrated $EDIT_NAME"
-echo "Next: app deploy $NAME   (recreates $SVC on the proxy network and reloads the proxy)"
+echo "Next: app deploy $NAME   (recreates $SVC on the proxy network; its Traefik labels keep Traefik routing it until the cutover)"

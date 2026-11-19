@@ -16,7 +16,7 @@ Perfect for rapid prototyping, staging environments, and cost-effective hosting 
 
 - **🏗️ Quick Experiments** — Deploy any Docker Compose app in under 5 minutes
 - **💰 Cost Effective** — Host multiple apps on one server instead of paying for separate hosting/serverless
-- **🔒 Automatic HTTPS** — Let's Encrypt certificates managed automatically via Traefik
+- **🔒 Automatic HTTPS** — Let's Encrypt certificates managed automatically by Caddy
 - **🔄 Auto-Deploy** — Git-based deployments without webhooks or complex CI/CD
 - **🛠️ Simple Management** — Powerful CLI for app lifecycle and debugging
 - **📦 No Vendor Lock-in** — Standard Docker Compose, runs anywhere
@@ -31,8 +31,9 @@ Perfect for rapid prototyping, staging environments, and cost-effective hosting 
 
 ### How It Works
 
-- **One Traefik instance** handles reverse proxy and SSL for all apps
+- **One Caddy instance** is the reverse proxy for all apps and gets their certificates
 - **Each app** lives in its own Git repo with a standard Docker Compose file
+- **Each app's proxy config** is a small file on the server, `apps/<name>/site.caddy`
 - **Systemd timers** poll for changes and auto-deploy (no webhooks needed)
 - **Simple CLI** manages everything: create, deploy, debug, monitor
 
@@ -55,8 +56,10 @@ The installer will:
 - Install systemd units for auto-deploy timers (skipped where systemd is absent)
 - Add `/opt/multi-deploy/bin` to PATH (new shells)
 
-On a host where a Traefik container runs, the installer updates the files but does not start
-Caddy; it points to `docs/UPGRADING.md` for the migration.
+**Upgrading a v1 server (Traefik)?** On a host where a Traefik container runs, the installer
+updates the files but does not start Caddy. Follow [docs/UPGRADING.md](docs/UPGRADING.md): it
+migrates the apps one by one while Traefik keeps serving, then cuts over in one step, with an
+automatic rollback.
 
 Settings, passed as environment variables to the installer:
 
@@ -69,38 +72,35 @@ Settings, passed as environment variables to the installer:
 | `REPO_REF` | `master` | branch or tag to install |
 
 ```bash
-MD_ACME_EMAIL=you@example.com REPO_REF=v2 bash -c "$(curl -fsSL https://raw.githubusercontent.com/r-Larch/multi-deploy/refs/heads/master/setup.sh)"
+MD_ACME_EMAIL=you@example.com REPO_REF=master bash -c "$(curl -fsSL https://raw.githubusercontent.com/r-Larch/multi-deploy/refs/heads/master/setup.sh)"
 ```
-
-The proxy reads `caddy/Caddyfile`, the shared snippets in `caddy/snippets/` (`security-headers`,
-`sse`) and each app's `apps/<name>/site.caddy` plus optional `apps/<name>/global.caddy`. App
-snippets are named `<name>-…`. The root Caddyfile sets no server timeouts: Caddy's defaults have
-no read or write limit, which long git pushes and large uploads through the proxy need.
-
-Tests (Docker required, everything runs in pinned containers): `./tests/run.sh` (shellcheck,
-unit tests, Caddyfile validation) and `./tests/e2e/run.sh` (fresh install with two sample apps).
 
 ### 2. Create Your First App
 
 ```bash
 # Interactively create a new app from any Docker Compose repo (private SSH repos supported)
-sudo app create myapp https://github.com/user/my-compose-repo.git
-# The setup will show you a deploy key if using SSH - add it to your repo's settings
-# The create command helps you prepare a compose override file so you can make adjustments,
-# like configuring your production app to run in a staging environment
+sudo app create myapp git@github.com:user/my-compose-repo.git
+# With an SSH repo it shows a deploy key: add it to your repo's settings
+```
 
-# Configure or override the Traefik router and middleware for your app
-# (if not already configured in your repo)
-labels:
-  - "traefik.enable=true"
-  # You can also add just this line to override the domain if your repo already has valid Traefik config
-  - "traefik.http.routers.myapp.rule=Host(`myapp-domain.com`)" 
-  - "traefik.http.routers.myapp.entrypoints=websecure"
-  - "traefik.http.routers.myapp.tls.certresolver=letsencrypt"
+The wizard asks for the branch, the service to put behind the proxy, its host name(s) and port,
+whether it streams responses (server-sent events) and whether to add the shared security headers.
+It writes `apps/myapp/site.caddy`:
 
-# After configuring, deploy:
+```caddy
+myapp.example.com {
+	import security-headers
+	reverse_proxy myapp-web:8080
+}
+```
+
+and `apps/myapp/compose.server.yml`, which puts the service on the `web` network as `myapp-web`,
+the name `site.caddy` proxies to. Your repo's compose file stays untouched.
+
+```bash
+# Deploy: builds, starts the stack and reloads the proxy
 sudo app deploy myapp
-# Your app is now live at https://myapp-domain.com
+# Your app is now live at https://myapp.example.com
 
 # (Optional) Enable auto-deployment (polls every minute for changes)
 sudo app timers myapp on
@@ -112,12 +112,53 @@ sudo app update myapp
 **What happens behind the scenes:**
 
 - Repo cloned to `/opt/multi-deploy/apps/myapp/code`
-- Generated `compose.yml` uses `include:` to include your repo's compose files + Traefik config
+- Generated `compose.yml` uses `include:` to merge your repo's compose file with `compose.server.yml`
+- Caddy reads `site.caddy` on the reload, gets the host's certificate and proxies to `myapp-web:8080`
 - Systemd timer starts polling for git changes and auto-deploying
 
 ### 3. That's It
 
 Your app automatically deploys on git pushes. No webhooks, no CI/CD setup required.
+
+## The Proxy
+
+One Caddy container (`multi-deploy-caddy`, from `caddy/compose.yml`) owns ports 80/443 and the
+certificates. It reads `caddy/Caddyfile`, which imports:
+
+- `caddy/snippets/*.caddy` — shared snippets, usable by every app:
+
+  | Snippet | Where | What |
+  |---|---|---|
+  | `security-headers` | site block | HSTS with preload, same-origin referrer, SAMEORIGIN framing, nosniff |
+  | `compress` | site block | zstd/gzip for text types; server-sent events stay uncompressed |
+  | `sse` | inside `reverse_proxy { }` | flush every write (server-sent events, streaming) |
+
+- `apps/<name>/site.caddy` — the app's site blocks. Edit it by hand to change hosts, add
+  redirects, headers and so on, then apply with `app proxy reload`.
+- `apps/<name>/global.caddy` — optional, only an `on_demand_tls` block, for the one app that owns
+  on-demand TLS.
+
+Caddy has no Docker socket. It reaches each app through a network alias on the shared `web`
+network: `compose.server.yml` gives the proxied service the alias `<name>-<service>`, and
+`site.caddy` proxies to `<name>-<service>:<port>`.
+
+multi-deploy checks its own rules before Caddy's (`app proxy validate`), and every refusal names
+the apps involved:
+
+- `global.caddy` holds only `on_demand_tls`, and at most one app has one
+- at most one app has a catch-all site (`https://`, `:443`, …), and it is the `on_demand_tls` owner
+- an app's own snippets are named `(<name>-…)`
+- no `log` directive in `site.caddy`: the root Caddyfile logs every request of every site to stdout
+
+The root Caddyfile sets no server timeouts: Caddy's defaults have no read or write limit, which
+long git pushes and large uploads through the proxy need.
+
+```bash
+sudo app proxy validate   # the rules above, then Caddy's own validation
+sudo app proxy reload     # validate, then reload without a restart; a refused config keeps the running one
+sudo app proxy status     # each app's hosts and their certificate expiry
+sudo app proxy logs       # Caddy's log, access log included
+```
 
 ## App Management
 
@@ -129,10 +170,10 @@ The `app` command provides everything you need to manage your deployments:
 # List all apps and their status
 sudo app list
 
-# Get detailed info about an app (shows services, containers, git status)
+# Get detailed info about an app (site.caddy, services, git status)
 sudo app detail myapp
 
-# View logs (last 50 lines, follows by default)
+# View logs (last 200 lines, follows)
 sudo app logs myapp
 
 # Manual deployment (useful for testing)
@@ -164,7 +205,7 @@ sudo app timers myapp on   # Start auto-deployment timer
 sudo app timers myapp off  # Stop auto-deployment (app keeps running)
 
 # Complete removal
-sudo app delete myapp    # Stops services, removes files, disables timer
+sudo app delete myapp    # Disables the timer, stops the containers (named volumes stay), removes the files, drops the routes
 ```
 
 ## 🔧 Troubleshooting
@@ -179,7 +220,7 @@ sudo app list
 
 # Get detailed information about a specific app
 sudo app detail myapp
-# Shows: git status, running containers, service states, recent deployments
+# Shows: git status, site.caddy, services, compose config
 ```
 
 ### Debug Deployment Issues
@@ -190,6 +231,9 @@ sudo app timers myapp
 
 # Manually trigger deployment to see errors
 sudo app deploy myapp
+
+# Stream the deploy logs of the timer
+sudo app ci-logs myapp
 
 # Check git status for your app
 sudo app git myapp status
@@ -227,9 +271,11 @@ sudo app restart myapp
 
 **App not accessible from web:**
 
-- Check Traefik labels in your `compose.yml` or `compose.server.yml`
+- Check `apps/myapp/site.caddy`: host names, and the upstream `myapp-<service>:<port>`
+- `sudo app proxy validate`, then `sudo app proxy reload`
+- `sudo app proxy status` shows whether the host has a certificate yet
+- `sudo app proxy logs` shows certificate errors and every request
 - Verify domain DNS points to your server
-- Enable and Check Traefik dashboard eg. `https://traefik.yourdomain.com`
 
 **Deployment not happening automatically:**
 
@@ -254,29 +300,36 @@ sudo app restart myapp
 
 ```text
 /opt/multi-deploy/
-├── bin/           # CLI tools (app, app-compose, app-git, app-deploy)
+├── bin/           # CLI tools (app, app-compose, app-git, app-deploy, app-proxy, …)
 ├── apps/          # Your deployed applications
 │   └── myapp/
-│       ├── code/          # Your git repo
-│       ├── compose.yml    # Generated compose file
-│       ├── compose.server.yml  # Traefik configuration
-│       └── app.env        # App-specific environment
-├── traefik/       # Traefik reverse proxy config
+│       ├── code/               # Your git repo
+│       ├── compose.yml         # Generated stack: includes code/<compose file> + compose.server.yml
+│       ├── compose.server.yml  # Server override: the proxied service on `web` as myapp-<service>
+│       ├── site.caddy          # The app's proxy config
+│       ├── global.caddy        # Optional: on_demand_tls (one app at most)
+│       ├── logs/               # Deploy logs, 7 days
+│       └── app.env             # App settings (repo, branch, …)
+├── caddy/         # The Caddy proxy: compose.yml, Caddyfile, snippets/, .env, data/ (certificates)
 └── etc/systemd/   # Systemd timer templates
 ```
+
+A server upgraded from v1 also has `traefik/` until a later release removes it (see
+[docs/UPGRADING.md](docs/UPGRADING.md)).
 
 ### How Auto-Deployment Works
 
 1. **Systemd timer** (every minute) runs `watch-and-deploy.sh`
 2. **Git check:** Fetch latest commits from origin
 3. **Change detection:** Compare local vs remote branch  
-4. **Build & deploy:** If changes found, run `docker compose build --pull && up -d`
-5. **Logging:** All output saved to `/opt/multi-deploy/apps/<name>/deploy.log` (rotated weekly)
+4. **Build & deploy:** If changes found, run `docker compose build --pull && up -d`, then reload the proxy
+5. **Logging:** All output saved to `/opt/multi-deploy/apps/<name>/logs/<timestamp>.log` (kept 7 days)
 
 ### Networking
 
-- **External network `web`:** Shared between all apps for Traefik routing
-- **Traefik:** Handles SSL termination, routing, and Let's Encrypt certificates
+- **External network `web`:** shared by Caddy and the proxied service of every app
+- **Network aliases:** each proxied service is `<name>-<service>` on `web`, so two apps may both have a service called `web`
+- **Caddy:** TLS termination, routing and Let's Encrypt certificates; no Docker socket
 - **Per-app networks:** Each app gets isolated internal networking via Docker Compose
 
 ## Advanced Usage
@@ -341,37 +394,6 @@ sudo app deploy myapp
 sudo app git myapp switch main
 ```
 
-### Traefik Dashboard
-
-Enable the Traefik dashboard for monitoring and debugging your reverse proxy:
-
-```bash
-# Navigate to Traefik directory
-cd /opt/multi-deploy/traefik
-
-# Edit the environment file
-sudo nano .env
-```
-
-Update the dashboard settings:
-
-```bash
-TRAEFIK_DASHBOARD_ENABLE=true
-TRAEFIK_DASHBOARD_HOST=my-domain.com
-```
-
-Create dashboard user credentials:
-
-```bash
-# Add a user to the dashboard (replace with your username/password)
-echo "$(htpasswd -nb myusername MyPassw0rd123)" | sudo tee -a dashboard_users
-
-# Restart Traefik to apply changes
-sudo docker compose restart
-```
-
-Your Traefik dashboard will be available at `https://my-domain.com` with basic authentication using the credentials you created.
-
 ### Manual Deployments
 
 Disable auto-deployment for manual control:
@@ -388,22 +410,27 @@ sudo app deploy myapp
 
 ### Main Commands
 
-- **`create`** - Interactive setup wizard for new apps
+- **`create`** - Interactive setup wizard for new apps (writes `site.caddy` and `compose.server.yml`)
 - **`list`** - List all apps with status (running containers, auto-deploy state)
-- **`detail <name> [service]`** - Detailed app info: git status, services, containers
-- **`delete <name>`** - Remove app completely (stops containers, deletes files)
+- **`detail <name> [service]`** - Detailed app info: git status, `site.caddy`, services
+- **`delete <name>`** - Remove app completely: disables the timer, runs `docker compose down` (named volumes stay), deletes the files, reloads the proxy
 - **`timers <name>`** - Show auto-deploy status for an app
 - **`timers <name> on`** - Start auto-deployment timer (polls every minute)
 - **`timers <name> off`** - Stop auto-deployment timer (app keeps running)
-- **`proxy validate`** - Check every app's `site.caddy`/`global.caddy` (multi-deploy's cross-app rules, then Caddy's own validation)
+- **`prune [--days N] [--volumes]`** - Reclaim unused Docker data (images labelled `multi-deploy.keep=true` stay)
+
+### Proxy Commands
+
+- **`proxy validate`** - Check every app's `site.caddy`/`global.caddy` (multi-deploy's cross-app rules, then Caddy's own validation; in a throwaway container while Caddy is not running)
 - **`proxy reload`** - Validate, then reload Caddy without a restart; a refused config keeps the running one
 - **`proxy status`** - Hosts per app with their certificate expiry
 - **`proxy logs [docker-logs-args]`** - Caddy's logs (default: follow, last 200 lines)
-- **`migrate-proxy <name> [--write]`** - Translate an app's Traefik labels (read from the merged compose config) into `site.caddy`. Without `--write` it prints the proposed `site.caddy` and the diff of the compose file it would edit; `--write` backs that file up as `<file>.traefik.bak`, removes the `traefik.*` labels, aliases the service on the proxy network as `<name>-<service>` and writes `site.caddy` (then run `app deploy <name>`). The edited file is `compose.server.yml`, or a static app's own `compose.yml` when that holds the labels; labels in the repo (`code/`) are left there and `compose.server.yml` gets the alias. Anything it cannot translate (basic auth, path rules, priorities, unknown middlewares, tcp/udp routers, more than one proxied service, an unknown file shape) is listed as `TODO` and it exits 2 without writing
+- **`proxy cutover`**, **`proxy rollback`**, **`proxy cleanup-traefik`** - Move a v1 server from Traefik to Caddy, see [docs/UPGRADING.md](docs/UPGRADING.md)
+- **`migrate-proxy <name> [--write|--drop-labels]`** - Translate an app's Traefik labels (read from the merged compose config) into `site.caddy`. Without `--write` it prints the proposed `site.caddy` and the diff of the compose file it would edit; `--write` backs that file up as `<file>.traefik.bak`, aliases the service on the proxy network as `<name>-<service>` and writes `site.caddy`, keeping the `traefik.*` labels so Traefik routes the app until the cutover (then run `app deploy <name>`). The edited file is `compose.server.yml`, or a static app's own `compose.yml` when that holds the labels; labels in the repo (`code/`) are left there and `compose.server.yml` gets the alias. Anything it cannot translate (basic auth, path rules, priorities, unknown middlewares, tcp/udp routers, more than one proxied service, an unknown file shape) is listed as `TODO` and it exits 2 without writing. `--drop-labels`, after the cutover, removes the `traefik.*` labels (backup `<file>.labels.bak`)
 
 ### Deployment Commands
 
-- **`deploy <name>`** - Manual deployment: build and restart containers
+- **`deploy <name>`** - Manual deployment: build, restart containers, reload the proxy
 - **`up <name>`** - Start all services with `docker compose up -d`
 - **`down <name>`** - Stop all services with `docker compose down`
 - **`restart <name>`** - Restart all services
@@ -411,6 +438,7 @@ sudo app deploy myapp
 ### Debugging Commands
 
 - **`logs <name> [service]`** - View logs (follows by default, last 200 lines)
+- **`ci-logs <name>`** - Stream the deploy logs (rolls over to the newest file)
 - **`shell <name> <service>`** - Open interactive shell in running container
 - **`run <name> <service> command`** - Run one-off command in service container
 
@@ -469,9 +497,20 @@ sudo app git myapp switch main     # Back to main branch
 
 ### Docker Compose Tips
 
-- Don't publish ports on app services; Traefik connects over the shared `web` network
-- In `compose.server.yml`, only the web service needs `traefik.enable=true` and to join the `web` network
-- Put additional Traefik labels in your app repo compose files if needed (middlewares, routers, etc.)
+- Don't publish ports on app services; Caddy connects over the shared `web` network
+- Only the proxied service joins `web`, with its alias, in `compose.server.yml`; the others stay on the app's own network
+- Routing, headers and redirects belong in `site.caddy`, not in Docker labels
+
+## Development
+
+Tests need Docker; everything runs in pinned containers (Git Bash on Windows works):
+
+- `./tests/run.sh` — shellcheck, unit tests, Caddyfile validation
+- `./tests/e2e/run.sh` — fresh install with sample apps served over TLS (Caddy's local CA), and a
+  v1 install (the `1.1.0` tag) with Traefik upgraded, cut over, rolled back and cleaned up
+
+Test resources carry the label `multi-deploy.test` and use their own network; they are removed at
+the end.
 
 ## Contributing & Support
 

@@ -8,6 +8,20 @@ services:
       web:
         aliases:
           - sse-app-app
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=web"
+      - "traefik.http.routers.sse-app.rule=Host(`app.example-e.test`)"
+      - "traefik.http.routers.sse-app.entrypoints=websecure"
+      - "traefik.http.routers.sse-app.tls.certresolver=letsencrypt"
+      - "traefik.http.services.sse-app.loadbalancer.server.port=8080"
+      # MCP answers stream as SSE: flush each write instead of buffering it.
+      - "traefik.http.services.sse-app.loadbalancer.responseforwarding.flushinterval=1ms"
+      - "traefik.http.routers.sse-app-http.rule=Host(`app.example-e.test`)"
+      - "traefik.http.routers.sse-app-http.entrypoints=web"
+      - "traefik.http.routers.sse-app-http.middlewares=sse-app-https"
+      - "traefik.http.middlewares.sse-app-https.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.sse-app-https.redirectscheme.permanent=true"
 
 networks:
   web:

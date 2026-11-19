@@ -102,12 +102,10 @@ prepare_ssh() {
   fi
 }
 
-# Prints the names of running Traefik containers (multi-deploy's own or any traefik image).
-running_traefik() {
-  {
-    docker ps --filter label=com.docker.compose.project=traefik --format '{{.Names}}'
-    docker ps --format '{{.Names}} {{.Image}}' | awk '$2 ~ /^((docker\.io\/)?(library\/)?)traefik(:|@|$)/ {print $1}'
-  } | sort -u
+# The installed bin/lib-app: running_traefik and the other shared helpers.
+load_lib() {
+  # shellcheck source=bin/lib-app
+  source "$INSTALL_DIR/bin/lib-app"
 }
 
 # Creates the proxy network with the fixed subnet when missing; keeps an existing one.
@@ -173,7 +171,7 @@ start_caddy() {
   mkdir -p "$INSTALL_DIR/caddy/data/caddy-data" "$INSTALL_DIR/caddy/data/caddy-config"
   chmod 700 "$INSTALL_DIR/caddy/data"
   (cd "$INSTALL_DIR/caddy" && docker compose up -d)
-  if [[ "$(docker inspect -f '{{.State.Running}}' multi-deploy-caddy 2>/dev/null)" == true ]]; then
+  if caddy_running; then
     echo "Caddy is running."
   else
     echo "ERROR: Caddy container did not start. Check logs: docker logs multi-deploy-caddy" >&2
@@ -218,6 +216,7 @@ main() {
 
   install_packages
   fetch_repo
+  load_lib
   prepare_ssh
 
   local proxy_ready=true

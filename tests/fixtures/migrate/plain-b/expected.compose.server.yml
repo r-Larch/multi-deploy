@@ -11,6 +11,18 @@ services:
       web:
         aliases:
           - plain-b-nginx
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=web"
+      - "traefik.http.routers.plain-b.rule=Host(`auth-preprod.example-d.test`)"
+      - "traefik.http.routers.plain-b.entrypoints=websecure"
+      - "traefik.http.routers.plain-b.tls.certresolver=letsencrypt"
+      - "traefik.http.services.plain-b.loadbalancer.server.port=8080"
+      - "traefik.http.routers.plain-b-http.rule=Host(`auth-preprod.example-d.test`)"
+      - "traefik.http.routers.plain-b-http.entrypoints=web"
+      - "traefik.http.routers.plain-b-http.middlewares=plain-b-https"
+      - "traefik.http.middlewares.plain-b-https.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.plain-b-https.redirectscheme.permanent=true"
 
 networks:
   web:

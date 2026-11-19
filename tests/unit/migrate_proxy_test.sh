@@ -26,6 +26,7 @@ cat > "$WORK/bin/docker" <<EOF
 case "\$1" in
   compose) exec "$REAL_DOCKER" "\$@" ;;
   inspect) echo true ;;
+  ps) [[ ! -f "$WORK/traefik_running" ]] || echo traefik ;;
 esac
 exit 0
 EOF
@@ -74,14 +75,14 @@ for app in "${GOLDEN_APPS[@]}"; do
   assert_cmd "$app: the migrated stack is a valid compose config" \
     docker compose --project-name "$app" -f "$dir/compose.yml" config --quiet
 
+  assert_contains "$app: --write keeps the traefik.* labels, so Traefik keeps routing the app" "$(cat "$dir/$edited" "$dir/code"/*.yml 2>/dev/null)" "traefik.http.routers."
+
   migrate "$app" --write
-  if [[ "$app" == code-labels ]]; then
-    assert_eq "code-labels: labels stay in code/; a migrated app is reported as migrated" \
-      "0 code-labels is migrated: site.caddy exists and app is aliased code-labels-app; its Traefik labels in code/ are inert." "$rc $(tail -n1 <<< "$out")"
-  else
-    assert_eq "$app: a migrated app has nothing left to migrate" "0 No Traefik labels in the compose config of $app; nothing to migrate." "$rc $out"
-  fi
+  assert_eq "$app: a migrated app is reported as migrated" "0 $app is migrated: site.caddy exists" "$rc ${out%% and *}"
 done
+assert_eq "code-labels: the message names the service and its alias" \
+  "code-labels is migrated: site.caddy exists and app is aliased code-labels-app; its Traefik labels are inert under Caddy." \
+  "$("$INSTALL_DIR/bin/app-migrate-proxy" code-labels 2>&1)"
 
 aliases=$(cd "$APPS/code-labels" && docker compose -p code-labels -f compose.yml config --format json | jq -c '.services.app.networks')
 assert_eq "migrated code-labels: compose.server.yml aliases the service whose labels live in code/" '{"web":{"aliases":["code-labels-app"]}}' "$aliases"
@@ -91,9 +92,36 @@ assert_eq "migrated two-hosts: compose aliases api on the proxy network" '{"web"
 out=$("$INSTALL_DIR/bin/app-proxy" validate 2>&1) && rc=0 || rc=$?
 assert_eq "the migrated sites pass app-proxy validate's cross-app checks" "0 Proxy config is valid." "$rc $out"
 
+echo "# --drop-labels, after the cutover"
+dir="$APPS/two-hosts"
+migrated=$(cat "$dir/compose.server.yml")
+touch "$WORK/traefik_running"
+migrate two-hosts --drop-labels
+assert_eq "--drop-labels while Traefik runs: refused" 1 "$rc"
+assert_contains "--drop-labels while Traefik runs: the reason" "$out" "needs Caddy running and Traefik stopped"
+assert_eq "--drop-labels while Traefik runs: nothing is written" "$migrated" "$(cat "$dir/compose.server.yml")"
+rm "$WORK/traefik_running"
+migrate two-hosts --drop-labels
+assert_eq "--drop-labels succeeds" 0 "$rc"
+assert_eq "--drop-labels: compose.server.yml is the golden file (labels and their comments gone)" \
+  "$(cat "$FIXTURES/two-hosts/expected.dropped.compose.server.yml")" "$(cat "$dir/compose.server.yml")"
+assert_eq "--drop-labels: compose.server.yml.labels.bak is the migrated file" "$migrated" "$(cat "$dir/compose.server.yml.labels.bak")"
+assert_contains "--drop-labels: next step" "$out" "Next: app deploy two-hosts"
+assert_cmd "--drop-labels: the stack is a valid compose config" \
+  docker compose --project-name two-hosts -f "$dir/compose.yml" config --quiet
+migrate two-hosts --drop-labels
+assert_eq "--drop-labels again: nothing to drop" "0 No Traefik labels in apps/two-hosts; nothing to drop." "$rc $out"
+migrate code-labels --drop-labels
+assert_eq "--drop-labels with labels in code/: code/ is not edited" \
+  "0 The Traefik labels of code-labels live in code/, which is not edited; remove them in the app repo." "$rc $out"
+install_fixture plain-a unmigrated
+migrate unmigrated --drop-labels
+assert_eq "--drop-labels before --write: refused" 1 "$rc"
+assert_contains "--drop-labels before --write: the reason" "$out" "site.caddy is missing"
+
 out=$("$INSTALL_DIR/bin/app" migrate-proxy 2>&1) && rc=0 || rc=$?
 assert_eq "app migrate-proxy without a name prints its usage" "1" "$rc"
-assert_contains "app usage lists migrate-proxy" "$("$INSTALL_DIR/bin/app" help)" "migrate-proxy <name> [--write]"
+assert_contains "app usage lists migrate-proxy" "$("$INSTALL_DIR/bin/app" help)" "migrate-proxy <name> [--write|--drop-labels]"
 install_fixture plain-a via-app
 out=$("$INSTALL_DIR/bin/app" migrate-proxy via-app 2>&1) && rc=0 || rc=$?
 assert_eq "app migrate-proxy <name> runs the dry run" 0 "$rc"

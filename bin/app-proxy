@@ -1,19 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# app-proxy <validate|reload|status|logs [docker-logs-args]>
+# app-proxy <validate|reload|status|logs [docker-logs-args]|cutover|rollback|cleanup-traefik>
 # The single owner of every interaction with the shared Caddy proxy (container multi-deploy-caddy).
 # Caddy reads caddy/Caddyfile, which imports apps/*/global.caddy and apps/*/site.caddy.
+# cutover, rollback and cleanup-traefik move a v1 host from Traefik (traefik/) to Caddy (caddy/);
+# see docs/UPGRADING.md.
+# Settings: MD_PROXY_CA (CA file the cutover's host check trusts; default: the system trust),
+# MD_PROXY_HOST_TIMEOUT (seconds per host, default 120), MD_CHECK_IMAGE (curl image of the checks).
 
 INSTALL_DIR=${INSTALL_DIR:-/opt/multi-deploy}
 
 # shellcheck disable=SC1091
 source "$INSTALL_DIR/bin/lib-app" || { echo "Missing $INSTALL_DIR/bin/lib-app" >&2; exit 1; }
 
-CADDY_CONTAINER=multi-deploy-caddy
+CADDY_CONTAINER=$MD_CADDY_CONTAINER
+CADDY_DIR="$INSTALL_DIR/caddy"
+TRAEFIK_DIR="$INSTALL_DIR/traefik"
 CADDY_CONFIG=(--config /etc/caddy/Caddyfile --adapter caddyfile)
+CHECK_IMAGE=${MD_CHECK_IMAGE:-curlimages/curl:8.11.1}
+HOST_TIMEOUT=${MD_PROXY_HOST_TIMEOUT:-120}
 
-usage() { echo "Usage: $(basename "$0") <validate|reload|status|logs [docker-logs-args]>" >&2; }
+usage() { echo "Usage: $(basename "$0") <validate|reload|status|logs [docker-logs-args]|cutover|rollback|cleanup-traefik>" >&2; }
 
 # Outline of a Caddyfile fragment, one record per line:
 #   site <address>       an address of a top-level site block
@@ -106,16 +114,37 @@ cross_app_checks() {
 }
 
 require_caddy() {
-  if [[ "$(docker inspect -f '{{.State.Running}}' "$CADDY_CONTAINER" 2>/dev/null)" != true ]]; then
-    red "$CADDY_CONTAINER is not running (start it: cd $INSTALL_DIR/caddy && docker compose up -d)" >&2
+  if ! caddy_running; then
+    red "$CADDY_CONTAINER is not running (start it: cd $CADDY_DIR && docker compose up -d)" >&2
     exit 1
   fi
 }
 
-# caddy_exec <caddy-subcommand>: runs it in the container; on failure prints Caddy's error lines.
+# proxy_compose <dir> <compose-args…>: docker compose in caddy/ or traefik/, with the files there
+# (compose.override.yml included) and their .env.
+proxy_compose() { local dir="$1"; shift; (cd "$dir" && docker compose "$@"); }
+
+# oneoff <docker-run-args…>: a throwaway container, labelled MD_RESOURCE_LABEL when that is set.
+oneoff() {
+  local args=(run --rm)
+  [[ -z "${MD_RESOURCE_LABEL:-}" ]] || args+=(--label "$MD_RESOURCE_LABEL")
+  docker "${args[@]}" "$@"
+}
+
+# caddy_exec <caddy-subcommand>: runs it on the root Caddyfile, in the running container or, while
+# Caddy is not running, in a throwaway container of the same image and files. On failure it
+# prints Caddy's error lines.
 caddy_exec() {
-  local out rc=0
-  out=$(docker exec "$CADDY_CONTAINER" caddy "$1" "${CADDY_CONFIG[@]}" 2>&1) || rc=$?
+  local out rc=0 image
+  if caddy_running; then
+    out=$(docker exec "$CADDY_CONTAINER" caddy "$1" "${CADDY_CONFIG[@]}" 2>&1) || rc=$?
+  else
+    image=$(proxy_compose "$CADDY_DIR" config --images 2>/dev/null | head -n1 || true)
+    image=${image:-caddy:2.11.9-alpine}
+    out=$(oneoff --env-file "$CADDY_DIR/.env" \
+      -v "$CADDY_DIR/Caddyfile:/etc/caddy/Caddyfile:ro" -v "$CADDY_DIR/snippets:/etc/caddy/snippets:ro" \
+      -v "$APPS_DIR:/etc/caddy/apps:ro" "$image" caddy "$1" "${CADDY_CONFIG[@]}" 2>&1) || rc=$?
+  fi
   if (( rc != 0 )); then
     red "caddy $1 failed:" >&2
     { grep -E '"level":"error"|^Error' <<< "$out" || printf '%s\n' "$out"; } >&2
@@ -124,13 +153,22 @@ caddy_exec() {
 }
 
 cmd_validate() {
-  cross_app_checks
-  require_caddy
-  caddy_exec validate
+  cross_app_checks || return 1
+  caddy_running || echo "$CADDY_CONTAINER is not running: Caddy validates the files in a throwaway container."
+  caddy_exec validate || return 1
   echo "Proxy config is valid."
 }
 
 cmd_reload() {
+  local traefik
+  if ! caddy_running; then
+    traefik=$(running_traefik | paste -sd ' ' -)
+    if [[ -n "$traefik" ]]; then
+      echo "Proxy not migrated to Caddy yet: Traefik ($traefik) is serving, so the Caddy reload was skipped (see $INSTALL_DIR/docs/UPGRADING.md)."
+      return 0
+    fi
+    require_caddy
+  fi
   cmd_validate
   if ! caddy_exec reload; then
     red "Caddy kept its running config." >&2
@@ -179,6 +217,268 @@ cmd_logs() {
   exec docker logs "$@" "$CADDY_CONTAINER"
 }
 
+# --------------- Cutover from Traefik ---------------
+
+# The https hosts of every site.caddy, one per line: catch-all, http:// and wildcard sites have no
+# single host to check.
+site_hosts() {
+  local f kind value host
+  for f in "$APPS_DIR"/*/site.caddy; do
+    [[ -f "$f" ]] || continue
+    while read -r kind value; do
+      [[ "$kind" == site ]] || continue
+      is_catch_all "$value" && continue
+      [[ "$value" != http://* ]] || continue
+      host="${value#https://}"; host="${host%%/*}"; host="${host%:*}"
+      [[ "$host" != *[*{}]* ]] || continue
+      echo "${host,,}"
+    done < <(caddy_outline "$f")
+  done | sort -u
+}
+
+# The upstreams (host:port) of the reverse_proxy and forward_auth directives of every site.caddy.
+site_upstreams() {
+  local files=("$APPS_DIR"/*/site.caddy)
+  [[ -f "${files[0]}" ]] || return 0
+  awk '
+    /^[ \t]*#/ { next }
+    {
+      line = $0; sub(/[ \t]#.*$/, "", line)
+      n = split(line, t, /[ \t]+/); f = 0
+      for (i = 1; i <= n; i++) if (t[i] != "") { f = i; break }
+      if (!f || (t[f] != "reverse_proxy" && t[f] != "forward_auth")) next
+      for (i = f + 1; i <= n; i++) {
+        u = t[i]
+        if (u == "") continue
+        if (u == "{") break
+        if (u ~ /^[\/@*]/ || u ~ /[{}]/) continue
+        scheme = "http"
+        if (u ~ /^[a-z0-9]+:\/\//) { scheme = u; sub(/:\/\/.*/, "", scheme); sub(/^[a-z0-9]+:\/\//, "", u) }
+        sub(/\/.*/, "", u)
+        if (u !~ /:[0-9]+$/) u = u ":" (scheme == "https" ? 443 : 80)
+        print u
+      }
+    }' "${files[@]}" | sort -u
+}
+
+# Apps whose merged compose config has Traefik routers, one "<app> <routers>" per line; an app
+# whose config cannot be read prints "<app> error".
+traefik_router_apps() {
+  local dir app n
+  for dir in "$APPS_DIR"/*/; do
+    [[ -f "$dir/app.env" ]] || continue
+    app=$(basename "$dir")
+    if ! n=$("$INSTALL_DIR/bin/app-compose" "$app" config --format json 2>/dev/null \
+        | jq '[.services[]? | (.labels // {}) | keys[] | select(startswith("traefik.http.routers."))] | length'); then
+      echo "$app error"; continue
+    fi
+    (( n == 0 )) || echo "$app $n"
+  done
+}
+
+container_ip() { docker inspect -f "{{(index .NetworkSettings.Networks \"$MD_WEB_NETWORK\").IPAddress}}" "$1" 2>/dev/null || true; }
+
+# probe <ip> <host> <caddy|traefik>: polls https://<host>/ at <ip> from a container on the proxy
+# network until it answers, at most HOST_TIMEOUT seconds. Answers: a status below 500, over TLS
+# trusted by MD_PROXY_CA or the system (caddy), or any TLS but not Traefik's own 404 (traefik).
+# Prints the status, or the last error.
+probe() {
+  local ip="$1" host="$2" mode="$3" mount=() curl_args=()
+  if [[ "$mode" == traefik ]]; then
+    curl_args=(-k)
+  elif [[ -n "${MD_PROXY_CA:-}" ]]; then
+    # root: the CA file may be private (Caddy's local root.crt is mode 600)
+    mount=(--user 0 -v "$MD_PROXY_CA:/md-proxy-ca.crt:ro")
+    curl_args=(--cacert /md-proxy-ca.crt)
+  fi
+  # shellcheck disable=SC2016 # the script runs in the container's sh
+  oneoff --network "$MD_WEB_NETWORK" "${mount[@]}" --entrypoint sh "$CHECK_IMAGE" -c '
+    ip=$1 host=$2 mode=$3 timeout=$4; shift 4
+    end=$(( $(date +%s) + timeout ))
+    while :; do
+      code=$(curl -sS -o /tmp/body -w "%{http_code}" --max-time 10 "$@" --resolve "$host:443:$ip" "https://$host/" 2>/tmp/err) && rc=0 || rc=$?
+      if [ "$rc" -eq 0 ] && [ "$code" -lt 500 ]; then
+        if [ "$mode" != traefik ] || ! grep -qx "404 page not found" /tmp/body; then echo "status $code"; exit 0; fi
+        code="$code (Traefik has no router for the host)"
+      fi
+      [ "$(date +%s)" -lt "$end" ] || break
+      sleep 2
+    done
+    if [ "$rc" -ne 0 ]; then tail -n1 /tmp/err; else echo "status $code"; fi
+    exit 1' sh "$ip" "$host" "$mode" "$HOST_TIMEOUT" "${curl_args[@]}"
+}
+
+# check_hosts <caddy|traefik> <container> <hosts…>: prints a line per host; FAILED_HOSTS lists the
+# hosts that the container does not serve.
+check_hosts() {
+  local mode="$1" container="$2" ip host result
+  shift 2
+  FAILED_HOSTS=()
+  ip=$(container_ip "$container")
+  if [[ -z "$ip" ]]; then
+    red "  $container has no address on $MD_WEB_NETWORK" >&2
+    FAILED_HOSTS=("$@"); return 1
+  fi
+  for host in "$@"; do
+    if result=$(probe "$ip" "$host" "$mode" 2>&1); then
+      echo "  ok   $host: $result from $container"
+    else
+      echo "  FAIL $host: ${result##*$'\n'}"
+      FAILED_HOSTS+=("$host")
+    fi
+  done
+  (( ${#FAILED_HOSTS[@]} == 0 ))
+}
+
+start_caddy() {
+  mkdir -p "$CADDY_DIR/data/caddy-data" "$CADDY_DIR/data/caddy-config"
+  chmod 700 "$CADDY_DIR/data"
+  proxy_compose "$CADDY_DIR" up -d
+  local _
+  for _ in $(seq 1 15); do caddy_running && return 0; sleep 1; done
+  red "$CADDY_CONTAINER did not start: docker logs $CADDY_CONTAINER" >&2
+  return 1
+}
+
+# The running Traefik container on the proxy network.
+traefik_container() {
+  local c
+  for c in $(running_traefik); do
+    [[ -z "$(container_ip "$c")" ]] || { echo "$c"; return 0; }
+  done
+}
+
+# to_traefik <hosts…>: stops Caddy, starts Traefik and checks that it serves the hosts again.
+to_traefik() {
+  local traefik
+  bold "Rollback: stopping Caddy, starting Traefik"
+  proxy_compose "$CADDY_DIR" down
+  proxy_compose "$TRAEFIK_DIR" up -d
+  traefik=$(traefik_container)
+  if [[ -z "$traefik" ]]; then
+    red "Traefik is not running on $MD_WEB_NETWORK after the start: cd $TRAEFIK_DIR && docker compose logs" >&2
+    FAILED_HOSTS=("$@"); return 1
+  fi
+  (( $# == 0 )) || check_hosts traefik "$traefik" "$@"
+}
+
+require_traefik_files() {
+  [[ -f "$TRAEFIK_DIR/docker-compose.yml" && -f "$TRAEFIK_DIR/.env" ]] \
+    || { red "No Traefik install in $TRAEFIK_DIR (docker-compose.yml and .env)" >&2; exit 1; }
+}
+
+# preflight: every check before the cutover touches anything; prints each and returns non-zero
+# when one fails.
+preflight() {
+  local failed=0 traefik app n email upstreams=() u result
+  bold "Preflight"
+  traefik=$(running_traefik | paste -sd ' ' -)
+  if [[ -n "$traefik" ]]; then echo "  ok   Traefik is running: $traefik"
+  else echo "  FAIL Traefik is not running: nothing to cut over"; failed=1; fi
+  if caddy_running; then echo "  FAIL $CADDY_CONTAINER is already running"; failed=1; fi
+
+  while read -r app n; do
+    [[ -n "$app" ]] || continue
+    if [[ "$n" == error ]]; then echo "  FAIL app $app: docker compose config failed"; failed=1
+    elif [[ -f "$APPS_DIR/$app/site.caddy" ]]; then echo "  ok   app $app: $n Traefik router labels, site.caddy present"
+    else echo "  FAIL app $app: $n Traefik router labels and no site.caddy (run: app migrate-proxy $app)"; failed=1; fi
+  done < <(traefik_router_apps)
+
+  if result=$(cmd_validate 2>&1); then echo "  ok   app proxy validate: config is valid"
+  else echo "  FAIL app proxy validate:"; while IFS= read -r u; do echo "         $u"; done <<< "$result"; failed=1; fi
+
+  mapfile -t upstreams < <(site_upstreams)
+  if (( ${#upstreams[@]} > 0 )); then
+    # shellcheck disable=SC2016 # the script runs in the container's sh
+    result=$(oneoff --network "$MD_WEB_NETWORK" --entrypoint sh "$CHECK_IMAGE" -c '
+      for u; do
+        curl -s -o /dev/null --connect-timeout 3 --max-time 5 "http://$u/" && rc=0 || rc=$?
+        if [ "$rc" -eq 6 ]; then echo "unresolved $u"; else echo "ok $u"; fi
+      done' sh "${upstreams[@]}" 2>&1 || true)
+    for u in "${upstreams[@]}"; do
+      if grep -qxF "ok $u" <<< "$result"; then echo "  ok   upstream $u resolves on $MD_WEB_NETWORK"
+      else echo "  FAIL upstream $u does not resolve on $MD_WEB_NETWORK (start the app: app up <name>)"; failed=1; fi
+    done
+  fi
+
+  email=$(sed -n 's/^ACME_EMAIL=//p' "$CADDY_DIR/.env" 2>/dev/null | tail -n1)
+  if [[ -n "$email" ]]; then echo "  ok   caddy/.env has an ACME email"
+  else echo "  FAIL caddy/.env has no ACME_EMAIL (rerun setup.sh with MD_ACME_EMAIL)"; failed=1; fi
+  return "$failed"
+}
+
+cmd_cutover() {
+  require_bin jq
+  require_traefik_files
+  local hosts=() owners reason=""
+  if ! preflight; then
+    red "Preflight failed: nothing was changed." >&2
+    exit 1
+  fi
+  mapfile -t hosts < <(site_hosts)
+
+  bold "Cutover: stopping Traefik, starting Caddy"
+  proxy_compose "$TRAEFIK_DIR" down
+  FAILED_HOSTS=()
+  if ! start_caddy; then
+    reason="Caddy did not start"
+  else
+    owners=$(docker ps --filter publish=443 --format '{{.Names}}' | grep -vx "$CADDY_CONTAINER" | paste -sd ' ' - || true)
+    if [[ -n "$owners" ]]; then
+      reason="port 443 is published by $owners, not only by $CADDY_CONTAINER"
+    else
+      bold "Host checks (each up to ${HOST_TIMEOUT}s, through $CADDY_CONTAINER)"
+      check_hosts caddy "$CADDY_CONTAINER" "${hosts[@]}" || reason="hosts not served by Caddy"
+    fi
+  fi
+
+  if [[ -z "$reason" ]]; then
+    bold "Cutover done: Caddy serves ${#hosts[@]} hosts, Traefik is stopped."
+    echo "Next: check the apps, then app proxy cleanup-traefik (see docs/UPGRADING.md)."
+    return 0
+  fi
+  local failed=("${FAILED_HOSTS[@]}")
+  (( ${#failed[@]} > 0 )) || failed=("${hosts[@]}")
+  red "Cutover failed ($reason) for: ${failed[*]}" >&2
+  if to_traefik "${hosts[@]}"; then
+    red "Rolled back: Traefik serves again; Caddy is stopped." >&2
+  else
+    red "Rolled back, but Traefik does not serve: ${FAILED_HOSTS[*]}" >&2
+  fi
+  exit 1
+}
+
+cmd_rollback() {
+  require_traefik_files
+  local hosts=()
+  mapfile -t hosts < <(site_hosts)
+  if to_traefik "${hosts[@]}"; then
+    bold "Rolled back: Traefik serves ${#hosts[@]} hosts; Caddy is stopped."
+  else
+    red "Traefik does not serve: ${FAILED_HOSTS[*]}" >&2
+    exit 1
+  fi
+}
+
+cmd_cleanup_traefik() {
+  local traefik backup
+  traefik=$(running_traefik | paste -sd ' ' -)
+  if ! caddy_running || [[ -n "$traefik" ]]; then
+    red "cleanup-traefik needs Caddy running and Traefik stopped (after a successful app proxy cutover)." >&2
+    exit 1
+  fi
+  docker ps -aq --filter label=com.docker.compose.project=traefik | xargs -r docker rm -f >/dev/null
+  echo "Removed the Traefik containers."
+  if [[ -d "$TRAEFIK_DIR/letsencrypt" ]]; then
+    mkdir -p "$INSTALL_DIR/backups"
+    backup="$INSTALL_DIR/backups/traefik-letsencrypt-$(date +%Y%m%d-%H%M%S).tar.gz"
+    (umask 077 && tar -czf "$backup" -C "$TRAEFIK_DIR" letsencrypt)
+    rm -rf "$TRAEFIK_DIR/letsencrypt"
+    echo "Removed $TRAEFIK_DIR/letsencrypt; backup: $backup"
+  fi
+  echo "The files of $TRAEFIK_DIR stay; a later release removes them."
+}
+
 action=${1:-}
 shift || true
 case "$action" in
@@ -186,5 +486,8 @@ case "$action" in
   reload)   cmd_reload ;;
   status)   cmd_status ;;
   logs)     cmd_logs "$@" ;;
+  cutover)  cmd_cutover ;;
+  rollback) cmd_rollback ;;
+  cleanup-traefik) cmd_cleanup_traefik ;;
   *) usage; exit 1 ;;
 esac

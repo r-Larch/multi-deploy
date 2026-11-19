@@ -24,6 +24,19 @@ export COMPOSE_PARALLEL_LIMIT="${COMPOSE_PARALLEL_LIMIT:-1}"
 MD_WEB_NETWORK=${MD_WEB_NETWORK:-$( (sed -n 's/^MD_WEB_NETWORK=//p' "$INSTALL_DIR/caddy/.env" 2>/dev/null || true) | tail -n1)}
 export MD_WEB_NETWORK="${MD_WEB_NETWORK:-web}"
 
+# --------------- Proxy state ---------------
+MD_CADDY_CONTAINER=multi-deploy-caddy
+
+caddy_running() { [[ "$(docker inspect -f '{{.State.Running}}' "$MD_CADDY_CONTAINER" 2>/dev/null)" == true ]]; }
+
+# Prints the names of running Traefik containers (multi-deploy's own or any traefik image).
+running_traefik() {
+  {
+    docker ps --filter label=com.docker.compose.project=traefik --format '{{.Names}}'
+    docker ps --format '{{.Names}} {{.Image}}' | awk '$2 ~ /^((docker\.io\/)?(library\/)?)traefik(:|@|$)/ {print $1}'
+  } | sort -u
+}
+
 # --------------- UX helpers ---------------
 bold() { echo -e "\e[1m$*\e[0m"; }
 red() { echo -e "\e[31m$*\e[0m"; }
