@@ -15,6 +15,7 @@
 #   app shell <name> <svc> # open shell in running container
 #   app run <name> ...args # run raw docker compose args
 #   app proxy <validate|reload|status|logs> # the shared Caddy proxy
+#   app migrate-proxy <name> [--write] # Traefik labels to site.caddy
 set -euo pipefail
 
 INSTALL_DIR=${INSTALL_DIR:-/opt/multi-deploy}
@@ -340,6 +341,7 @@ cmd_down() { local n=${1:-}; [[ -z "$n" ]] && { red "Usage: $(basename "$0") dow
 cmd_pull() { local n=${1:-}; [[ -z "$n" ]] && { red "Usage: $(basename "$0") pull <name>"; exit 1; }; "$INSTALL_DIR/bin/app-git" "$n" pull; }
 cmd_git() { local n=${1:-}; shift || true; [[ -z "$n" ]] && { red "Usage: $(basename "$0") git <name> <git-command>"; exit 1; }; "$INSTALL_DIR/bin/app-git" "$n" "$@"; }
 cmd_proxy() { "$INSTALL_DIR/bin/app-proxy" "$@"; }
+cmd_migrate_proxy() { local n=${1:-}; [[ -n "$n" ]] || { red "Usage: $(basename "$0") migrate-proxy <name> [--write]"; exit 1; }; "$INSTALL_DIR/bin/app-migrate-proxy" "$@"; }
 cmd_prune() { "$INSTALL_DIR/bin/docker-prune.sh" "$@"; }
 cmd_run() { local n=${1:-}; shift || true; [[ -z "$n" ]] && { red "Usage: $(basename "$0") run <name> <compose-args...>"; exit 1; }; "$INSTALL_DIR/bin/app-compose" "$n" "$@"; }
 cmd_shell() { local n=${1:-}; local svc=${2:-}; [[ -z "$n" || -z "$svc" ]] && { red "Usage: $(basename "$0") shell <name> <service>"; exit 1; }; "$INSTALL_DIR/bin/app-compose" "$n" exec -it "$svc" sh; }
@@ -522,6 +524,7 @@ Usage:
   $(basename "$0") run <name> ...    # run raw docker compose args
   $(basename "$0") prune [--days N] [--volumes] # reclaim unused docker data (default: older than 5d)
   $(basename "$0") proxy <validate|reload|status|logs> # check, reload, inspect the Caddy proxy
+  $(basename "$0") migrate-proxy <name> [--write] # translate Traefik labels to site.caddy (dry run without --write)
 USAGE
 }
 
@@ -546,6 +549,7 @@ main() {
     run)    shift || true; cmd_run "$@" ;;
     prune)  shift || true; cmd_prune "$@" ;;
     proxy)  shift || true; cmd_proxy "$@" ;;
+    migrate-proxy) shift || true; cmd_migrate_proxy "$@" ;;
     -h|--help|help|"") usage ;;
     *) red "Unknown command: $cmd"; echo; usage; exit 1 ;;
   esac

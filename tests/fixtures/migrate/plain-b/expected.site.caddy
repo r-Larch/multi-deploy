@@ -1,0 +1,5 @@
+# Proxy config of plain-b, imported by caddy/Caddyfile. Apply changes with: app proxy reload
+# Snippets defined here are named (plain-b-…). No log directive: the root Caddyfile logs every site.
+auth-preprod.example-d.test {
+	reverse_proxy plain-b-nginx:8080
+}

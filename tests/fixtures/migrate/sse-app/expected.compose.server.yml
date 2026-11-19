@@ -1,0 +1,15 @@
+# /opt/multi-deploy/apps/sse-app/compose.server.yml. The environment comes from code/.env (env_file in
+# code/compose.yml); this file only attaches the app to Traefik.
+services:
+  app:
+    mem_limit: 512m
+    networks:
+      default: {}
+      web:
+        aliases:
+          - sse-app-app
+
+networks:
+  web:
+    external: true
+    name: ${MD_WEB_NETWORK:-web}

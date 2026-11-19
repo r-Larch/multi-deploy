@@ -1,0 +1,42 @@
+services:
+  app:
+    networks:
+      - web
+    env_file:
+      - .env
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=web"
+
+      # ── Router (HTTPS) ────────────────────────────────────────────────────
+      - "traefik.http.routers.prod.rule=Host(`${APP_HOST}`)"
+      - "traefik.http.routers.prod.entrypoints=websecure"
+      - "traefik.http.routers.prod.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.prod.middlewares=prod-sse"
+
+      # ── Service ───────────────────────────────────────────────────────────
+      - "traefik.http.services.prod.loadbalancer.server.port=8080"
+      - "traefik.http.services.prod.loadbalancer.server.scheme=http"
+      - "traefik.http.services.prod.loadbalancer.passhostheader=true"
+      # SSE: flush each write instead of buffering it.
+      - "traefik.http.services.prod.loadbalancer.responseforwarding.flushinterval=1ms"
+
+      # ── Health check ──────────────────────────────────────────────────────
+      - "traefik.http.services.prod.loadbalancer.healthcheck.path=/health"
+      - "traefik.http.services.prod.loadbalancer.healthcheck.hostname=${APP_HOST}"
+      - "traefik.http.services.prod.loadbalancer.healthcheck.interval=30s"
+      - "traefik.http.services.prod.loadbalancer.healthcheck.timeout=5s"
+
+      # ── SSE must not be compressed ────────────────────────────────────────
+      - "traefik.http.middlewares.prod-sse.compress.excludedcontenttypes=text/event-stream"
+
+      # ── HTTP → HTTPS ──────────────────────────────────────────────────────
+      - "traefik.http.routers.prod-http.rule=Host(`${APP_HOST}`)"
+      - "traefik.http.routers.prod-http.entrypoints=web"
+      - "traefik.http.routers.prod-http.middlewares=redirect-to-https"
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+
+networks:
+  web:
+    external: true
+    name: web

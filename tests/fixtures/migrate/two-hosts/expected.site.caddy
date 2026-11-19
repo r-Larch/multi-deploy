@@ -1,0 +1,7 @@
+# Proxy config of two-hosts, imported by caddy/Caddyfile. Apply changes with: app proxy reload
+# Snippets defined here are named (two-hosts-…). No log directive: the root Caddyfile logs every site.
+app.example-b.test, mcp.example-b.test {
+	reverse_proxy two-hosts-api:8080 {
+		import sse
+	}
+}

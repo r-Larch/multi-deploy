@@ -1,0 +1,14 @@
+# Proxy config of sse-healthcheck, imported by caddy/Caddyfile. Apply changes with: app proxy reload
+# Snippets defined here are named (sse-healthcheck-…). No log directive: the root Caddyfile logs every site.
+app.example-a.test {
+	import compress
+	reverse_proxy sse-healthcheck-app:8080 {
+		import sse
+		health_uri /health
+		health_interval 30s
+		health_timeout 5s
+		health_headers {
+			Host app.example-a.test
+		}
+	}
+}

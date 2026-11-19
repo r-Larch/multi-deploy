@@ -1,0 +1,47 @@
+# Stub of the app repo's compose: an upstream with a page, /health, an SSE endpoint (/sse) and a
+# response with a Content-Length written in timed parts (/stream), for tests/e2e.
+services:
+  app:
+    image: python:3.13-alpine
+    environment:
+      MD_TEST_SECRET: compose-secret-must-not-leak
+    labels:
+      multi-deploy.test: ${MD_TEST_RUN:-unit}
+    command:
+      - python
+      - -u
+      - -c
+      - |
+        import http.server, time
+        class Handler(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+            def parts(self, ctype, parts, length):
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Connection", "close")
+                if length:
+                    self.send_header("Content-Length", str(sum(len(p) for p in parts)))
+                self.end_headers()
+                for p in parts:
+                    self.wfile.write(p)
+                    self.wfile.flush()
+                    time.sleep(2)
+                self.close_connection = True
+            def do_GET(self):
+                if self.path == "/sse":
+                    return self.parts("text/event-stream", [b"data: event-%d\n\n" % i for i in range(3)], False)
+                if self.path == "/stream":
+                    return self.parts("application/x-ndjson", [b'{"part": %d}\n' % i for i in range(3)], True)
+                body = b"ok\n" if self.path == "/health" else b"sse-healthcheck " + b"-" * 2000 + b"\n"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+        http.server.ThreadingHTTPServer(("", 8080), Handler).serve_forever()
+
+networks:
+  default:
+    labels:
+      multi-deploy.test: ${MD_TEST_RUN:-unit}

@@ -30,7 +30,7 @@ if docker inspect multi-deploy-caddy >/dev/null 2>&1; then
 fi
 
 build_test_image
-for image in "$CADDY_IMAGE" "$NGINX_IMAGE" "$CURL_IMAGE"; do
+for image in "$CADDY_IMAGE" "$NGINX_IMAGE" "$PYTHON_IMAGE" "$CURL_IMAGE"; do
   docker image inspect "$image" >/dev/null 2>&1 || docker pull -q "$image" >/dev/null
 done
 

@@ -1,0 +1,7 @@
+# Proxy config of sse-app, imported by caddy/Caddyfile. Apply changes with: app proxy reload
+# Snippets defined here are named (sse-app-…). No log directive: the root Caddyfile logs every site.
+app.example-e.test {
+	reverse_proxy sse-app-app:8080 {
+		import sse
+	}
+}

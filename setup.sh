@@ -26,13 +26,13 @@ has_systemd() { [[ -d /run/systemd/system ]] && command -v systemctl >/dev/null 
 
 install_packages() {
   local missing=() bin
-  for bin in git rsync curl ssh-keygen; do
+  for bin in git rsync curl ssh-keygen jq; do
     command -v "$bin" >/dev/null 2>&1 || missing+=("$bin")
   done
   if (( ${#missing[@]} > 0 )); then
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -y
-    apt-get install -y ca-certificates curl gnupg lsb-release git rsync unzip openssh-client
+    apt-get install -y ca-certificates curl gnupg lsb-release git rsync unzip openssh-client jq
   fi
 
   if ! command -v docker >/dev/null 2>&1; then

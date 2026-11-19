@@ -1,0 +1,18 @@
+# the host has no swap and sse-healthcheck holds most of its RAM: every service here is capped.
+services:
+  mongo:
+    mem_limit: 512m
+  backend:
+    mem_limit: 384m
+  nginx:
+    mem_limit: 64m
+    networks:
+      default: {}
+      web:
+        aliases:
+          - plain-a-nginx
+
+networks:
+  web:
+    external: true
+    name: ${MD_WEB_NETWORK:-web}

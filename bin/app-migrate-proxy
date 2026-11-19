@@ -1,0 +1,416 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# app-migrate-proxy <name> [--write]
+# Translates the Traefik labels of an app into apps/<name>/site.caddy for the Caddy proxy.
+# Labels are read from the merged compose config (app-compose config), so labels in code/ count and
+# ${VAR}s are resolved. That config holds resolved env values: only labels, ports and networks are
+# read from it, and nothing else of it is printed or written.
+# Without --write it prints the proposed site.caddy and the compose.server.yml diff. With --write it
+# backs up compose.server.yml to compose.server.yml.traefik.bak, removes the traefik.* labels, puts
+# the service on the proxy network as <name>-<service>, and writes site.caddy.
+# Exit codes: 0 done (or nothing to migrate), 1 error, 2 TODOs or an unrecognised compose.server.yml
+# (nothing is written).
+
+INSTALL_DIR=${INSTALL_DIR:-/opt/multi-deploy}
+
+# shellcheck disable=SC1091
+source "$INSTALL_DIR/bin/lib-app" || { echo "Missing $INSTALL_DIR/bin/lib-app" >&2; exit 1; }
+
+usage() { echo "Usage: $(basename "$0") <name> [--write]" >&2; }
+
+name=${1:-}
+write=n
+[[ -n "$name" ]] || { usage; exit 1; }
+case "${2:-}" in
+  "") ;;
+  --write) write=y ;;
+  *) usage; exit 1 ;;
+esac
+
+require_bin jq
+load_app "$name"
+SERVER_FILE="$APP_META_DIR/compose.server.yml"
+SITE_FILE="$APP_META_DIR/site.caddy"
+BACKUP_FILE="$SERVER_FILE.traefik.bak"
+
+TODOS=()
+todo() { local t; for t in "${TODOS[@]}"; do [[ "$t" != "$*" ]] || return 0; done; TODOS+=("$*"); }
+info() { echo "INFO $*" >&2; }
+
+# label_ref <key> <value>: the label as a TODO line shows it; only rules carry their value.
+label_ref() { if [[ "$1" == *.rule ]]; then echo "$1=$2"; else echo "$1"; fi; }
+
+# --------------- Read the labels ---------------
+config_json=$("$INSTALL_DIR/bin/app-compose" "$name" config --format json) || { red "docker compose config failed for $name" >&2; exit 1; }
+
+mapfile -t services < <(jq -r '.services | to_entries[]
+  | select((.value.labels // {}) | to_entries | any(.key | startswith("traefik.")))
+  | select((.value.labels["traefik.enable"] // "true") != "false")
+  | .key' <<< "$config_json")
+
+if (( ${#services[@]} == 0 )); then
+  echo "No Traefik labels in the compose config of $name; nothing to migrate."
+  exit 0
+fi
+if (( ${#services[@]} > 1 )); then
+  todo "services ${services[*]} all carry Traefik labels; migrate-proxy handles one proxied service per app"
+fi
+SVC=${services[0]}
+ALIAS="$NAME-$SVC"
+
+declare -A R_RULE=() R_EP=() R_MW=() R_SVC=()
+declare -A S_PORT=() S_SSE=() S_HC=()
+declare -A M_KIND=() M_SCHEME=() M_REGEX=() M_REPL=() M_PERM=() M_EXCL=() M_HDR=()
+routers=() tsvcs=() mws=()
+add_once() { local -n arr=$1; [[ " ${arr[*]} " == *" $2 "* ]] || arr+=("$2"); }
+
+# mw_kind <middleware> <kind> <key>: records the middleware's type; a second type is a TODO.
+mw_kind() {
+  add_once mws "$1"
+  if [[ -n "${M_KIND[$1]:-}" && "${M_KIND[$1]}" != "$2" ]]; then
+    todo "$3: middleware $1 mixes ${M_KIND[$1]} and $2"
+  fi
+  M_KIND[$1]=$2
+}
+
+while IFS=$'\t' read -r key value; do
+  case "$key" in
+    traefik.enable|traefik.docker.network) ;;
+    traefik.http.routers.*.*)
+      rest=${key#traefik.http.routers.}; r=${rest%%.*}; attr=${rest#*.}
+      add_once routers "$r"
+      case "$attr" in
+        rule) R_RULE[$r]=$value ;;
+        entrypoints) R_EP[$r]=$value ;;
+        middlewares) R_MW[$r]=$value ;;
+        service) R_SVC[$r]=$value ;;
+        tls|tls.certresolver) ;;
+        *) todo "$(label_ref "$key" "$value"): router setting $attr has no automatic translation" ;;
+      esac ;;
+    traefik.http.services.*.*)
+      rest=${key#traefik.http.services.}; s=${rest%%.*}; attr=${rest#*.}
+      add_once tsvcs "$s"
+      case "$attr" in
+        loadbalancer.server.port) S_PORT[$s]=$value ;;
+        loadbalancer.server.scheme) [[ "$value" == http ]] || todo "$key: upstream scheme $value" ;;
+        loadbalancer.passhostheader) [[ "$value" == true ]] || todo "$key: passhostheader=false" ;;
+        loadbalancer.responseforwarding.flushinterval) S_SSE[$s]=y ;;
+        loadbalancer.healthcheck.path) S_HC[$s.path]=$value ;;
+        loadbalancer.healthcheck.interval) S_HC[$s.interval]=$value ;;
+        loadbalancer.healthcheck.timeout) S_HC[$s.timeout]=$value ;;
+        loadbalancer.healthcheck.hostname) S_HC[$s.hostname]=$value ;;
+        *) todo "$key: service setting $attr has no automatic translation" ;;
+      esac ;;
+    traefik.http.middlewares.*.*)
+      rest=${key#traefik.http.middlewares.}; m=${rest%%.*}; attr=${rest#*.}
+      case "$attr" in
+        redirectscheme.scheme) mw_kind "$m" redirectscheme "$key"; M_SCHEME[$m]=$value ;;
+        redirectscheme.permanent) mw_kind "$m" redirectscheme "$key" ;;
+        redirectregex.regex) mw_kind "$m" redirectregex "$key"; M_REGEX[$m]=$value ;;
+        redirectregex.replacement) mw_kind "$m" redirectregex "$key"; M_REPL[$m]=$value ;;
+        redirectregex.permanent) mw_kind "$m" redirectregex "$key"; M_PERM[$m]=$value ;;
+        compress) mw_kind "$m" compress "$key" ;;
+        compress.excludedcontenttypes) mw_kind "$m" compress "$key"; M_EXCL[$m]=$value ;;
+        headers.customresponseheaders.*) mw_kind "$m" headers "$key"; M_HDR[$m]+="header ${attr#headers.customresponseheaders.} \"$value\""$'\n' ;;
+        headers.customrequestheaders.*) mw_kind "$m" headers "$key"; M_HDR[$m]+="request_header ${attr#headers.customrequestheaders.} \"$value\""$'\n' ;;
+        *) mw_kind "$m" "${attr%%.*}" "$key"; todo "$key: middleware type ${attr%%.*} has no automatic translation" ;;
+      esac ;;
+    traefik.tcp.*|traefik.udp.*) todo "$key: tcp/udp routing has no automatic translation" ;;
+    *) todo "$(label_ref "$key" "$value"): unknown Traefik label" ;;
+  esac
+done < <(jq -r --arg s "$SVC" '.services[$s].labels | to_entries[]
+  | select(.key | startswith("traefik.")) | "\(.key)\t\(.value | tostring | gsub("[\t\n]"; " ") | gsub("[$][$]"; "$"))"' <<< "$config_json")
+
+# --------------- Translate ---------------
+
+# rule_hosts <rule>: the hosts of Host(`a`) [|| Host(`b`) …]; fails on any other rule.
+rule_hosts() {
+  local rule="$1" part hosts=() h
+  # shellcheck disable=SC2016 # backticks of the Traefik rule, not a command substitution
+  local host_re='^Host\(`([A-Za-z0-9.-]+)`\)$'
+  while read -r part; do
+    [[ "$part" =~ $host_re ]] || return 1
+    hosts+=("${BASH_REMATCH[1],,}")
+  done <<< "${rule//||/$'\n'}"
+  (( ${#hosts[@]} > 0 )) || return 1
+  for h in "${hosts[@]}"; do echo "$h"; done
+}
+
+# regex_redirect <middleware>: "<from-host> <to-host>" for a redirectregex of a whole host.
+regex_redirect() {
+  local regex="${M_REGEX[$1]:-}" repl="${M_REPL[$1]:-}"
+  local from_re='^\^https[?]://([A-Za-z0-9\\.-]+)/[(][.][*][)][$]?$'
+  local to_re='^https://([A-Za-z0-9.-]+)/[$][{]?1[}]?$'
+  [[ "$regex" =~ $from_re ]] || return 1
+  local from=${BASH_REMATCH[1]//\\./.}
+  [[ "$repl" =~ $to_re ]] || return 1
+  echo "${from,,} ${BASH_REMATCH[1],,}"
+}
+
+# upstream_port <traefik-service>: the label port, else the one port the compose service exposes.
+upstream_port() {
+  if [[ -n "${S_PORT[$1]:-}" ]]; then echo "${S_PORT[$1]}"; return 0; fi
+  local ports
+  ports=$(jq -r --arg s "$SVC" '[(.services[$s].expose // [])[] | tostring | sub("/.*"; "")]
+    + [(.services[$s].ports // [])[] | .target | tostring] | unique | .[]' <<< "$config_json")
+  [[ -n "$ports" && "$ports" != *$'\n'* ]] || return 1
+  echo "$ports"
+}
+
+# only_kind <kind>: the router's middlewares (kinds) are all of that kind, and there is one at least.
+only_kind() { local k; for k in "${kinds[@]}"; do [[ "$k" == "$1" ]] || return 1; done; (( ${#kinds[@]} > 0 )); }
+
+sites=() redirects=()
+declare -A REDIR_HTTP=()
+
+for r in "${routers[@]}"; do
+  rule=${R_RULE[$r]:-}
+  if [[ -z "$rule" ]]; then todo "router $r has no rule"; continue; fi
+  if ! host_out=$(rule_hosts "$rule"); then
+    todo "traefik.http.routers.$r.rule=$rule: only Host(\`…\`) rules joined by || translate"
+    continue
+  fi
+  mapfile -t hosts <<< "$host_out"
+
+  ep_https=n
+  eps=${R_EP[$r]:-web,websecure}
+  IFS=',' read -ra ep_list <<< "${eps// /}"
+  for e in "${ep_list[@]}"; do
+    case "$e" in
+      web) ;;
+      websecure) ep_https=y ;;
+      *) todo "router $r: entrypoint $e"; continue 2 ;;
+    esac
+  done
+
+  mw_list=()
+  if [[ -n "${R_MW[$r]:-}" ]]; then IFS=',' read -ra mw_list <<< "${R_MW[$r]// /}"; fi
+  headers=n compress=n hdr_lines="" redirect="" unsupported=n
+  kinds=()
+  for m in "${mw_list[@]}"; do
+    if [[ "$m" == security-headers@file ]]; then headers=y; kinds+=(security-headers); continue; fi
+    if [[ "$m" == *@* && "$m" != *@docker ]]; then todo "router $r: middleware $m from another provider"; unsupported=y; continue; fi
+    m=${m%@docker}
+    case "${M_KIND[$m]:-}" in
+      redirectscheme)
+        [[ "${M_SCHEME[$m]:-}" == https ]] || { todo "middleware $m: redirectscheme to ${M_SCHEME[$m]:-?}"; unsupported=y; }
+        kinds+=(redirectscheme) ;;
+      redirectregex)
+        if redirect=$(regex_redirect "$m"); then
+          kinds+=(redirectregex); redirect_perm=${M_PERM[$m]:-false}
+        else
+          todo "middleware $m: redirectregex other than a whole-host redirect"; unsupported=y
+        fi ;;
+      compress)
+        if [[ -n "${M_EXCL[$m]:-}" && "${M_EXCL[$m]// /}" != text/event-stream ]]; then
+          todo "middleware $m: compress excluding ${M_EXCL[$m]}"; unsupported=y
+        fi
+        compress=y; kinds+=(compress) ;;
+      headers) hdr_lines+=${M_HDR[$m]}; kinds+=(headers) ;;
+      "") todo "router $r: middleware $m is not defined"; unsupported=y ;;
+      *) unsupported=y ;;
+    esac
+  done
+  [[ "$unsupported" == n ]] || continue
+
+  if [[ "$ep_https" == n ]]; then
+    if only_kind redirectscheme; then
+      info "router $r (http) redirects to https: dropped, Caddy redirects http to https itself"
+    elif only_kind redirectregex; then
+      for h in "${hosts[@]}"; do REDIR_HTTP[$h]=1; done
+      info "router $r (http) redirects ${redirect% *}: its redirect block also serves http://${redirect% *}"
+    else
+      todo "router $r serves content on entrypoint web (http); Caddy serves sites over https"
+    fi
+    continue
+  fi
+
+  if only_kind redirectregex; then
+    for h in "${hosts[@]}"; do
+      [[ "$h" == "${redirect% *}" ]] || { todo "router $r: host $h does not match its redirect from ${redirect% *}"; continue 2; }
+    done
+    redirects+=("$redirect $redirect_perm")
+    continue
+  fi
+  if [[ " ${kinds[*]} " == *" redirectscheme "* || " ${kinds[*]} " == *" redirectregex "* ]]; then
+    todo "router $r (https) combines a redirect with other middlewares"; continue
+  fi
+
+  s=${R_SVC[$r]:-}
+  if [[ -z "$s" ]]; then
+    if (( ${#tsvcs[@]} == 1 )); then s=${tsvcs[0]}
+    elif (( ${#tsvcs[@]} > 1 )); then todo "router $r names no service and $SVC defines ${#tsvcs[@]}"; continue
+    fi
+  elif [[ " ${tsvcs[*]} " != *" $s "* ]]; then
+    todo "router $r uses service $s, which is not defined by labels of $SVC"; continue
+  fi
+  if ! port=$(upstream_port "$s"); then todo "router $r: no loadbalancer.server.port and no single exposed port"; continue; fi
+
+  hosts_joined=$(printf '%s, ' "${hosts[@]}")
+  block="${hosts_joined%, } {"$'\n'
+  [[ "$headers" == y ]] && block+=$'\timport security-headers\n'
+  [[ "$compress" == y ]] && block+=$'\timport compress\n'
+  while IFS= read -r l; do [[ -n "$l" ]] && block+=$'\t'"$l"$'\n'; done <<< "$hdr_lines"
+  inner=""
+  [[ "${S_SSE[$s]:-}" == y ]] && inner+=$'\t\timport sse\n'
+  [[ -n "${S_HC[$s.path]:-}" ]] && inner+=$'\t\thealth_uri '"${S_HC[$s.path]}"$'\n'
+  [[ -n "${S_HC[$s.interval]:-}" ]] && inner+=$'\t\thealth_interval '"${S_HC[$s.interval]}"$'\n'
+  [[ -n "${S_HC[$s.timeout]:-}" ]] && inner+=$'\t\thealth_timeout '"${S_HC[$s.timeout]}"$'\n'
+  [[ -n "${S_HC[$s.hostname]:-}" ]] && inner+=$'\t\thealth_headers {\n\t\t\tHost '"${S_HC[$s.hostname]}"$'\n\t\t}\n'
+  if [[ -n "$inner" ]]; then
+    block+=$'\treverse_proxy '"$ALIAS:$port"$' {\n'"$inner"$'\t}\n'
+  else
+    block+=$'\treverse_proxy '"$ALIAS:$port"$'\n'
+  fi
+  sites+=("$block}")
+done
+
+for m in "${mws[@]}"; do
+  used=n
+  for r in "${routers[@]}"; do [[ ",${R_MW[$r]:-}," == *",$m,"* || ",${R_MW[$r]:-}," == *",$m@docker,"* ]] && used=y; done
+  [[ "$used" == y ]] || info "middleware $m is used by no router: dropped"
+done
+
+if (( ${#sites[@]} == 0 && ${#TODOS[@]} == 0 )); then
+  todo "no https router of $SVC serves content"
+fi
+
+render_site() {
+  echo "# Proxy config of $NAME, imported by caddy/Caddyfile. Apply changes with: app proxy reload"
+  echo "# Snippets defined here are named ($NAME-…). No log directive: the root Caddyfile logs every site."
+  local blocks=("${sites[@]}") b from to perm addr code first=y
+  for b in "${redirects[@]}"; do
+    read -r from to perm <<< "$b"
+    addr=$from code=""
+    [[ -n "${REDIR_HTTP[$from]:-}" ]] && addr+=", http://$from"
+    [[ "$perm" == true ]] && code=" permanent"
+    blocks+=("$addr {"$'\n\t'"redir https://$to{uri}$code"$'\n}')
+  done
+  for b in "${blocks[@]}"; do
+    [[ "$first" == y ]] || echo
+    first=n
+    printf '%s\n' "$b"
+  done
+}
+
+# --------------- Edit compose.server.yml ---------------
+
+# edit_server_file <file> <service> <alias>: the file without traefik.* labels (and their comment
+# lines), with the service's networks list as a map that aliases it on web, and the top-level web
+# network named ${MD_WEB_NETWORK:-web}. Fails (exit 3, reason on stderr) on any other shape.
+edit_server_file() {
+  awk -v svc="$2" -v alias="$3" '
+    function fail(msg) { print msg > "/dev/stderr"; failed = 1; exit 3 }
+    function ind(s) { return match(s, /[^ ]/) - 1 }
+    function key(s) { sub(/^ */, "", s); sub(/:.*/, "", s); return s }
+    function end_labels(   i, j) {
+      j = nb
+      while (j > 0 && buf[j] ~ /^[ \t]*$/) j--
+      for (i = j + 1; i <= nb; i++) print buf[i]
+      nb = 0; mode = ""
+    }
+    function end_nets(   i, n, has_web) {
+      for (i = 1; i <= nn; i++) {
+        n = nets[i]
+        if (n == "web") {
+          has_web = 1
+          print "      web:"; print "        aliases:"; print "          - " alias
+        } else print "      " n ": {}"
+      }
+      if (!has_web) fail("service " svc " is not on the web network")
+      mode = ""
+    }
+    /\r$/ { fail("compose.server.yml has CRLF line endings") }
+    {
+      line = $0
+      blank = line ~ /^[ \t]*$/
+      comment = line ~ /^[ \t]*#/
+      if (!blank && !comment && line ~ /^ *\t/) fail("compose.server.yml indents with tabs")
+      i = (blank || comment) ? -1 : ind(line)
+
+      if (mode == "labels") {
+        if (blank || comment) { buf[++nb] = line; next }
+        if (i >= 6) {
+          item = line; sub(/^ */, "", item)
+          t = item; sub(/^-[ \t]*/, "", t); gsub(/["'"'"']/, "", t)
+          if (t ~ /^traefik\./) { nb = 0; next }
+          if (!hdr_out) { print hdr; hdr_out = 1 }
+          for (k = 1; k <= nb; k++) print buf[k]
+          nb = 0; print line; next
+        }
+        end_labels()
+      }
+      if (mode == "nets") {
+        if (i >= 6) {
+          item = line; sub(/^ */, "", item)
+          gsub(/["'"'"' ]/, "", item)
+          if (item !~ /^-[A-Za-z0-9_.-]+$/) fail("the networks of " svc " are not a plain list")
+          sub(/^-/, "", item)
+          nets[++nn] = item; next
+        }
+        if (blank || comment) fail("the networks list of " svc " has a blank or comment line")
+        end_nets()
+      }
+
+      if (i == 0) { top = key(line); cur = ""; topnet = "" }
+      if (top == "services" && i == 2) cur = key(line)
+      if (top == "services" && cur == svc && i == 4) {
+        if (line ~ /^    labels: *$/) { mode = "labels"; hdr = line; hdr_out = 0; nb = 0; next }
+        if (line ~ /^    networks: *$/) { mode = "nets"; nn = 0; saw_nets = 1; print line; next }
+        if (line ~ /^    (labels|networks):/) fail("the " key(line) " of " svc " are not a block list")
+      }
+      if (top == "services" && i == 2 && cur == svc) saw_svc = 1
+      if (top == "networks" && i == 2) { topnet = key(line); if (topnet == "web") saw_web = 1 }
+      if (top == "networks" && topnet == "web" && i == 4 && key(line) == "name") {
+        print "    name: ${MD_WEB_NETWORK:-web}"; saw_name = 1; next
+      }
+      if (i > 0 && top != "services" && top != "networks") fail("unknown top-level key " top)
+      print line
+    }
+    END {
+      if (failed) exit 3
+      if (mode == "labels") end_labels()
+      if (mode == "nets") end_nets()
+      if (!saw_svc) fail("service " svc " is not in compose.server.yml")
+      if (!saw_nets) fail("service " svc " has no networks list")
+      if (!saw_web) fail("no top-level web network")
+      if (!saw_name) fail("the top-level web network has no name")
+    }
+  ' "$1"
+}
+
+WORK=$(mktemp -d)
+trap 'rm -rf "$WORK"' EXIT
+render_site > "$WORK/site.caddy"
+if [[ ! -f "$SERVER_FILE" ]]; then
+  todo "$SERVER_FILE does not exist"
+elif ! edit_server_file "$SERVER_FILE" "$SVC" "$ALIAS" > "$WORK/compose.server.yml" 2> "$WORK/edit.err"; then
+  todo "compose.server.yml has a shape migrate-proxy does not edit: $(cat "$WORK/edit.err")"
+elif grep -qE '^[^#]*traefik\.' "$WORK/compose.server.yml"; then
+  todo "compose.server.yml keeps traefik.* lines outside the labels of $SVC; remove them by hand"
+fi
+
+if (( ${#TODOS[@]} > 0 )); then
+  red "migrate-proxy cannot translate everything for $NAME; nothing was written:" >&2
+  printf 'TODO %s\n' "${TODOS[@]}" >&2
+  exit 2
+fi
+
+if [[ "$write" == n ]]; then
+  bold "apps/$NAME/site.caddy (proposed)"
+  cat "$WORK/site.caddy"
+  bold "apps/$NAME/compose.server.yml (changes)"
+  diff -u -L compose.server.yml -L "compose.server.yml (migrated)" "$SERVER_FILE" "$WORK/compose.server.yml" || true
+  echo "Apply with: $(basename "$0") $NAME --write"
+  exit 0
+fi
+
+if [[ -e "$SITE_FILE" ]]; then red "$SITE_FILE exists; move it away to migrate again" >&2; exit 1; fi
+if [[ -e "$BACKUP_FILE" ]]; then red "$BACKUP_FILE exists; move it away to migrate again" >&2; exit 1; fi
+cp -p "$SERVER_FILE" "$BACKUP_FILE"
+cat "$WORK/compose.server.yml" > "$SERVER_FILE"
+cp "$WORK/site.caddy" "$SITE_FILE"
+echo "Backed up compose.server.yml to $(basename "$BACKUP_FILE")"
+echo "Wrote $SITE_FILE and migrated compose.server.yml"
+echo "Next: app deploy $NAME   (recreates $SVC on the proxy network and reloads the proxy)"

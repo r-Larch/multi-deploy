@@ -9,12 +9,13 @@ TESTS_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT_DIR=$(cd "$TESTS_DIR/.." && pwd)
 export ROOT_DIR
 
-TEST_IMAGE=multi-deploy-test:28.3.2-2
+TEST_IMAGE=multi-deploy-test:28.3.2-3
 SHELLCHECK_IMAGE=koalaman/shellcheck:v0.10.0
 CADDY_IMAGE=caddy:2.11.9-alpine
 NGINX_IMAGE=nginx:1.27-alpine
+PYTHON_IMAGE=python:3.13-alpine
 CURL_IMAGE=curlimages/curl:8.11.1
-export TEST_IMAGE SHELLCHECK_IMAGE CADDY_IMAGE NGINX_IMAGE CURL_IMAGE
+export TEST_IMAGE SHELLCHECK_IMAGE CADDY_IMAGE NGINX_IMAGE PYTHON_IMAGE CURL_IMAGE
 
 # Path of a host directory as the Docker daemon understands it (P:/… on Docker Desktop).
 host_path() {

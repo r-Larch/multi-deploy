@@ -1,0 +1,13 @@
+services:
+  app:
+    networks:
+      web:
+        aliases:
+          - sse-healthcheck-app
+    env_file:
+      - .env
+
+networks:
+  web:
+    external: true
+    name: ${MD_WEB_NETWORK:-web}

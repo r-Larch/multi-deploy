@@ -1,0 +1,9 @@
+# Proxy config of www-apex, imported by caddy/Caddyfile. Apply changes with: app proxy reload
+# Snippets defined here are named (www-apex-…). No log directive: the root Caddyfile logs every site.
+example-c.test {
+	reverse_proxy www-apex-web:8080
+}
+
+www.example-c.test, http://www.example-c.test {
+	redir https://example-c.test{uri} permanent
+}

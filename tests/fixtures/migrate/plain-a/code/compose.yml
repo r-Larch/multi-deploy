@@ -1,0 +1,8 @@
+# Stub of the app repo's compose (config only, never started).
+services:
+  mongo:
+    image: python:3.13-alpine
+  backend:
+    image: python:3.13-alpine
+  nginx:
+    image: python:3.13-alpine

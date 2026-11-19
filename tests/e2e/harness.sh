@@ -19,7 +19,7 @@ CADDY=multi-deploy-caddy
 ROOT_CA="$INSTALL_DIR/caddy/data/caddy-data/caddy/pki/authorities/local/root.crt"
 
 # setup.sh installs from a git snapshot of the checkout, on a branch, to exercise REPO_REF.
-rsync -a --exclude .git --exclude .claude --exclude brief-u2.md --exclude brief-u3.md --exclude .commitmsg /src/ /tmp/src/
+rsync -a --exclude .git --exclude .claude --exclude "brief-u*.md" --exclude fixtures-src --exclude .commitmsg /src/ /tmp/src/
 git -C /tmp/src init -q -b md-test
 git -C /tmp/src add -A
 git -C /tmp/src -c user.name=e2e -c user.email=e2e@example.test commit -q -m snapshot
@@ -208,6 +208,66 @@ assert_eq "app-three.test is no longer served" 1 "$(( rc != 0 ))"
 assert_eq "app-two still serves" app-two "$(serves app-two.test)"
 assert_eq "Caddy was never restarted" "$caddy_started" "$(started_at)"
 
+echo "# app migrate-proxy: Traefik labels of the fixtures served by Caddy"
+for app in sse-healthcheck www-apex; do
+  cp -r "/src/tests/fixtures/migrate/$app" "$INSTALL_DIR/apps/"
+  rm -f "$INSTALL_DIR/apps/$app"/expected.*
+done
+out=$(app migrate-proxy www-apex 2>&1) && rc=0 || rc=$?
+assert_eq "the dry run succeeds" 0 "$rc"
+assert_contains "the dry run prints the www redirect block" "$out" "redir https://example-c.test{uri} permanent"
+assert_cmd "the dry run writes no site.caddy" test ! -e "$INSTALL_DIR/apps/www-apex/site.caddy"
+for app in sse-healthcheck www-apex; do
+  out=$(app migrate-proxy "$app" --write 2>&1) && rc=0 || rc=$?
+  assert_eq "$app: migrate-proxy --write succeeds" 0 "$rc"
+  assert_cmd "$app: the original is kept as compose.server.yml.traefik.bak" \
+    cmp -s "/src/tests/fixtures/migrate/$app/compose.server.yml" "$INSTALL_DIR/apps/$app/compose.server.yml.traefik.bak"
+  out=$(app deploy "$app" 2>&1) && rc=0 || rc=$?
+  assert_eq "$app: app deploy succeeds" 0 "$rc"
+done
+
+# timed <host> <path>: each non-empty line of the response body as "<epoch-second> <line>", then
+# "content-encoding: …" if the response was compressed (the request accepts gzip).
+timed() {
+  docker run --rm --label "$MD_TEST_LABEL" --network "$MD_WEB_NETWORK" --user 0 \
+    -v "$MD_TEST_VOLUME:$MD_TEST_MOUNT:ro" --entrypoint sh "$CURL_IMAGE" -c '
+      curl -sSN --max-time 30 -H "Accept-Encoding: gzip" -D /tmp/headers --cacert "$1" --resolve "$2:443:$3" "https://$2$4" |
+        while IFS= read -r l; do [ -n "$l" ] && echo "$(date +%s) $l"; done
+      tr "A-Z" "a-z" < /tmp/headers | grep "^content-encoding:" || true' sh "$ROOT_CA" "$1" "$ip" "$2"
+}
+# spread <timed-output>: seconds between the first and the last body line.
+spread() { awk '$2 != "content-encoding:" { if (first == "") first = $1; last = $1 } END { print last - first }' <<< "$1"; }
+
+body=""
+for _ in $(seq 1 45); do
+  body=$(curl_run --cacert "$ROOT_CA" --resolve "app.example-a.test:443:$ip" https://app.example-a.test/ 2>/dev/null) && [[ "$body" == sse-healthcheck* ]] && break
+  sleep 1
+done
+assert_contains "app.example-a.test serves over TLS with Caddy's local CA" "$body" "sse-healthcheck ---"
+headers=$(curl_run -o /dev/null -D - -H 'Accept-Encoding: gzip' --cacert "$ROOT_CA" --resolve "app.example-a.test:443:$ip" https://app.example-a.test/)
+assert_contains "app.example-a.test compresses its page (import compress)" "${headers,,}" "content-encoding: gzip"
+sse=$(timed app.example-a.test /sse)
+assert_eq "SSE: all three events arrive" 3 "$(grep -c ' data: event-' <<< "$sse")"
+assert_not_contains "SSE: the event stream is not compressed" "$sse" "content-encoding:"
+assert_eq "SSE: events arrive as they are sent, before the response ends (4s apart in total)" 1 "$(( $(spread "$sse") >= 3 ))"
+stream=$(timed app.example-a.test /stream)
+assert_eq "a streamed response with a Content-Length: all three parts arrive" 3 "$(grep -c ' {"part": ' <<< "$stream")"
+assert_eq "a streamed response arrives part by part (import sse flushes each write)" 1 "$(( $(spread "$stream") >= 3 ))"
+assert_eq "app.example-a.test redirects http to https" "308 https://app.example-a.test/" \
+  "$(curl_run -o /dev/null -w '%{http_code} %{redirect_url}' --resolve "app.example-a.test:80:$ip" http://app.example-a.test/)"
+
+assert_eq "example-c.test serves over TLS with Caddy's local CA" www-apex "$(serves example-c.test)"
+www=(--cacert "$ROOT_CA" --resolve "www.example-c.test:443:$ip" --resolve "www.example-c.test:80:$ip" --resolve "example-c.test:443:$ip")
+assert_eq "https://www.example-c.test redirects to the apex with 301" "301 https://example-c.test/a/b?c=1" \
+  "$(curl_run -o /dev/null -w '%{http_code} %{redirect_url}' "${www[@]}" 'https://www.example-c.test/a/b?c=1')"
+assert_eq "https://www.example-c.test reaches the apex in one hop" "1 200 https://example-c.test/" \
+  "$(curl_run -L -o /dev/null -w '%{num_redirects} %{http_code} %{url_effective}' "${www[@]}" https://www.example-c.test/)"
+assert_eq "http://www.example-c.test reaches the apex in one hop" "1 200 https://example-c.test/" \
+  "$(curl_run -L -o /dev/null -w '%{num_redirects} %{http_code} %{url_effective}' "${www[@]}" http://www.example-c.test/)"
+assert_eq "example-c.test redirects http to https" "308 https://example-c.test/" \
+  "$(curl_run -o /dev/null -w '%{http_code} %{redirect_url}' --resolve "example-c.test:80:$ip" http://example-c.test/)"
+
+for app in sse-healthcheck www-apex; do "$INSTALL_DIR/bin/app-compose" "$app" down >/dev/null 2>&1 || true; done
 for app in app-one app-two; do "$INSTALL_DIR/bin/app-compose" "$app" down >/dev/null 2>&1 || true; done
 (cd "$INSTALL_DIR/caddy" && docker compose down >/dev/null 2>&1) || true
 

@@ -11,7 +11,8 @@ source "$TESTS_DIR/assert.sh"
 RUN_LABEL="multi-deploy.test=unit-$$"
 SRC=$(host_path "$ROOT_DIR")
 
-trap 'remove_labelled "$RUN_LABEL"' EXIT
+MIGRATED=$(mktemp -d)
+trap 'remove_labelled "$RUN_LABEL"; rm -rf "$MIGRATED"' EXIT
 
 echo "# shellcheck ($SHELLCHECK_IMAGE)"
 cd "$ROOT_DIR"
@@ -58,5 +59,20 @@ assert_contains "security-headers snippet sets HSTS" "$json" '"max-age=31536000;
 assert_contains "ACME email comes from ACME_EMAIL" "$json" '"email":"unit@example.test"'
 assert_contains "access logging is on for every site" "$json" '"logs":{"trace":true}'
 assert_not_contains "no server timeouts are set" "$json" '_timeout"'
+
+# The golden site.caddy files of tests/fixtures/migrate, served together as one migrated server.
+for dir in tests/fixtures/migrate/*/; do
+  mkdir -p "$MIGRATED/$(basename "$dir")"
+  cp "$dir/expected.site.caddy" "$MIGRATED/$(basename "$dir")/site.caddy"
+done
+migrated="-v $(host_path "$MIGRATED"):/etc/caddy/apps:ro"
+# shellcheck disable=SC2086 # $migrated is two words on purpose
+out=$(caddy_run $migrated "$CADDY_IMAGE" caddy validate --config /etc/caddy/Caddyfile 2>&1) && rc=0 || rc=$?
+assert_eq "the six migrated site.caddy files are valid together" 0 "$rc"
+# shellcheck disable=SC2086
+json=$(caddy_run $migrated "$CADDY_IMAGE" caddy adapt --config /etc/caddy/Caddyfile 2>/dev/null)
+assert_contains "the compress snippet encodes html" "$json" '"Content-Type":["text/html*"'
+assert_not_contains "the compress snippet leaves text/event-stream out" "$json" 'text/event-stream'
+assert_not_contains "the compress snippet does not match every text type" "$json" '"text/*"'
 
 finish "tests/run.sh"

@@ -1,0 +1,37 @@
+# Router names are prefixed `www-apex` so they never clash with sse-healthcheck, two-hosts or plain-*.
+services:
+  web:
+    mem_limit: 64m
+    networks:
+      - web
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=web"
+      - "traefik.http.services.www-apex.loadbalancer.server.port=8080"
+      # https://example-c.test
+      - "traefik.http.routers.www-apex.rule=Host(`example-c.test`)"
+      - "traefik.http.routers.www-apex.entrypoints=websecure"
+      - "traefik.http.routers.www-apex.tls.certresolver=letsencrypt"
+      # https://www.example-c.test → https://example-c.test
+      - "traefik.http.routers.www-apex-www.rule=Host(`www.example-c.test`)"
+      - "traefik.http.routers.www-apex-www.entrypoints=websecure"
+      - "traefik.http.routers.www-apex-www.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.www-apex-www.middlewares=www-apex-apex"
+      - "traefik.http.middlewares.www-apex-apex.redirectregex.regex=^https?://www\\.example-c\\.test/(.*)"
+      - "traefik.http.middlewares.www-apex-apex.redirectregex.replacement=https://example-c.test/$${1}"
+      - "traefik.http.middlewares.www-apex-apex.redirectregex.permanent=true"
+      # http://www.example-c.test → https://example-c.test in one hop
+      - "traefik.http.routers.www-apex-www-http.rule=Host(`www.example-c.test`)"
+      - "traefik.http.routers.www-apex-www-http.entrypoints=web"
+      - "traefik.http.routers.www-apex-www-http.middlewares=www-apex-apex"
+      # http → https
+      - "traefik.http.routers.www-apex-http.rule=Host(`example-c.test`)"
+      - "traefik.http.routers.www-apex-http.entrypoints=web"
+      - "traefik.http.routers.www-apex-http.middlewares=www-apex-https"
+      - "traefik.http.middlewares.www-apex-https.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.www-apex-https.redirectscheme.permanent=true"
+
+networks:
+  web:
+    external: true
+    name: web

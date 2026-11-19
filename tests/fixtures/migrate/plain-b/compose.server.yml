@@ -1,0 +1,28 @@
+# the host has no swap and sse-healthcheck holds most of its RAM: every service here is capped.
+services:
+  mongo:
+    mem_limit: 512m
+  backend:
+    mem_limit: 384m
+  nginx:
+    mem_limit: 64m
+    networks:
+      - default
+      - web
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=web"
+      - "traefik.http.routers.plain-b.rule=Host(`auth-preprod.example-d.test`)"
+      - "traefik.http.routers.plain-b.entrypoints=websecure"
+      - "traefik.http.routers.plain-b.tls.certresolver=letsencrypt"
+      - "traefik.http.services.plain-b.loadbalancer.server.port=8080"
+      - "traefik.http.routers.plain-b-http.rule=Host(`auth-preprod.example-d.test`)"
+      - "traefik.http.routers.plain-b-http.entrypoints=web"
+      - "traefik.http.routers.plain-b-http.middlewares=plain-b-https"
+      - "traefik.http.middlewares.plain-b-https.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.plain-b-https.redirectscheme.permanent=true"
+
+networks:
+  web:
+    external: true
+    name: web

@@ -1,0 +1,13 @@
+# Router names are prefixed `www-apex` so they never clash with sse-healthcheck, two-hosts or plain-*.
+services:
+  web:
+    mem_limit: 64m
+    networks:
+      web:
+        aliases:
+          - www-apex-web
+
+networks:
+  web:
+    external: true
+    name: ${MD_WEB_NETWORK:-web}

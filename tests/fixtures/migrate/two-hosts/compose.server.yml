@@ -1,0 +1,27 @@
+# Paths are absolute: inside an include, relative ones resolve against code/.
+services:
+  api:
+    env_file:
+      - path: /opt/multi-deploy/apps/two-hosts/.env
+    mem_limit: 512m
+    networks:
+      - web
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=web"
+      - "traefik.http.routers.two-hosts.rule=Host(`app.example-b.test`) || Host(`mcp.example-b.test`)"
+      - "traefik.http.routers.two-hosts.entrypoints=websecure"
+      - "traefik.http.routers.two-hosts.tls.certresolver=letsencrypt"
+      - "traefik.http.services.two-hosts.loadbalancer.server.port=8080"
+      # MCP answers stream as SSE: flush each write instead of buffering it.
+      - "traefik.http.services.two-hosts.loadbalancer.responseforwarding.flushinterval=1ms"
+      - "traefik.http.routers.two-hosts-http.rule=Host(`app.example-b.test`) || Host(`mcp.example-b.test`)"
+      - "traefik.http.routers.two-hosts-http.entrypoints=web"
+      - "traefik.http.routers.two-hosts-http.middlewares=two-hosts-https"
+      - "traefik.http.middlewares.two-hosts-https.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.two-hosts-https.redirectscheme.permanent=true"
+
+networks:
+  web:
+    external: true
+    name: web

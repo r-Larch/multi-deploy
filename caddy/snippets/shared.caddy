@@ -16,3 +16,36 @@
 (sse) {
 	flush_interval -1
 }
+
+# Site-level: zstd/gzip compression that leaves server-sent events (text/event-stream) plain, so
+# they stream event by event. Caddy's own default list compresses every text/* type, SSE included.
+# Usage: `import compress` in a site block.
+(compress) {
+	encode {
+		zstd
+		gzip
+		minimum_length 1024
+		match {
+			header Content-Type text/html*
+			header Content-Type text/css*
+			header Content-Type text/plain*
+			header Content-Type text/javascript*
+			header Content-Type text/xml*
+			header Content-Type text/csv*
+			header Content-Type text/markdown*
+			header Content-Type application/javascript*
+			header Content-Type application/json*
+			header Content-Type application/ld+json*
+			header Content-Type application/manifest+json*
+			header Content-Type application/problem+json*
+			header Content-Type application/rss+xml*
+			header Content-Type application/atom+xml*
+			header Content-Type application/xml*
+			header Content-Type application/xhtml+xml*
+			header Content-Type application/wasm*
+			header Content-Type font/*
+			header Content-Type image/svg+xml*
+			header Content-Type image/x-icon*
+		}
+	}
+}

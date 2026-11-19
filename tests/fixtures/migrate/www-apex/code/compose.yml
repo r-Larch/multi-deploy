@@ -1,0 +1,12 @@
+# Stub of the app repo's compose: a static page on port 8080, for tests/e2e.
+services:
+  web:
+    image: python:3.13-alpine
+    labels:
+      multi-deploy.test: ${MD_TEST_RUN:-unit}
+    command: ["sh", "-c", "mkdir -p /site && echo www-apex > /site/index.html && exec python -m http.server -d /site 8080"]
+
+networks:
+  default:
+    labels:
+      multi-deploy.test: ${MD_TEST_RUN:-unit}

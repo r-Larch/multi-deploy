@@ -399,6 +399,7 @@ sudo app deploy myapp
 - **`proxy reload`** - Validate, then reload Caddy without a restart; a refused config keeps the running one
 - **`proxy status`** - Hosts per app with their certificate expiry
 - **`proxy logs [docker-logs-args]`** - Caddy's logs (default: follow, last 200 lines)
+- **`migrate-proxy <name> [--write]`** - Translate an app's Traefik labels (read from the merged compose config) into `site.caddy`. Without `--write` it prints the proposed `site.caddy` and the `compose.server.yml` diff; `--write` backs up `compose.server.yml` to `compose.server.yml.traefik.bak`, removes the `traefik.*` labels, aliases the service on the proxy network as `<name>-<service>` and writes `site.caddy` (then run `app deploy <name>`). Anything it cannot translate (basic auth, path rules, priorities, unknown middlewares, tcp/udp routers, more than one proxied service, an unknown file shape) is listed as `TODO` and it exits 2 without writing
 
 ### Deployment Commands
 

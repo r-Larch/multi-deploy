@@ -1,0 +1,15 @@
+# Paths are absolute: inside an include, relative ones resolve against code/.
+services:
+  api:
+    env_file:
+      - path: /opt/multi-deploy/apps/two-hosts/.env
+    mem_limit: 512m
+    networks:
+      web:
+        aliases:
+          - two-hosts-api
+
+networks:
+  web:
+    external: true
+    name: ${MD_WEB_NETWORK:-web}
