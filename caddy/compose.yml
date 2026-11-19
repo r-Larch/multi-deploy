@@ -1,0 +1,26 @@
+name: multi-deploy-caddy
+
+services:
+  caddy:
+    image: ${MD_CADDY_IMAGE:-caddy:2.11.9-alpine}
+    container_name: multi-deploy-caddy
+    restart: always
+    env_file:
+      - .env
+    ports:
+      - "80:80/tcp"
+      - "443:443/tcp"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./snippets:/etc/caddy/snippets:ro
+      - ../apps:/etc/caddy/apps:ro
+      - ./data/caddy-data:/data
+      - ./data/caddy-config:/config
+    networks:
+      - web
+
+networks:
+  web:
+    external: true
+    name: ${MD_WEB_NETWORK:-web}

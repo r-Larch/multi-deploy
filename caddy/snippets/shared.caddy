@@ -1,0 +1,18 @@
+# Shared snippets, available to every apps/<name>/site.caddy.
+
+# Site-level: the security headers of traefik/dynamic.yml (HSTS with preload, same-origin
+# referrer, SAMEORIGIN framing, nosniff). Usage: `import security-headers` in a site block.
+(security-headers) {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		Referrer-Policy "same-origin"
+		X-Frame-Options "SAMEORIGIN"
+		X-Content-Type-Options "nosniff"
+	}
+}
+
+# Inside a reverse_proxy block: flush every write, for server-sent events and streaming.
+# Usage: `reverse_proxy <app>-<service>:<port> { import sse }`.
+(sse) {
+	flush_interval -1
+}

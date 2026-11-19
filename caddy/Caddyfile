@@ -1,0 +1,28 @@
+# Root Caddyfile of the shared proxy. Apps are configured by plain files, not here:
+#   apps/<name>/global.caddy  optional, global options (inside the block below)
+#   apps/<name>/site.caddy    the app's site blocks
+# Snippets in snippets/*.caddy are shared by all apps and have no prefix; an app defines
+# its own snippets as (<name>-…) in its site.caddy.
+# No `servers { timeouts }`: Caddy's defaults have no read/write limit, which long git
+# pushes and large uploads behind the proxy rely on.
+{
+	email {$ACME_EMAIL}
+
+	# Default logger to stdout. `trace` turns on request logging for every site, so each
+	# request writes an access log line; its per-handler entries are DEBUG and stay hidden.
+	# A site that adds its own `log` directive turns access logs off for every other site.
+	log {
+		output stdout
+	}
+	servers {
+		trace
+	}
+
+	import /etc/caddy/apps/*/global.caddy
+
+	# Test hook: the e2e harness mounts a test.caddy here (local_certs). Nothing matches in production.
+	import /etc/caddy/test*.caddy
+}
+
+import /etc/caddy/snippets/*.caddy
+import /etc/caddy/apps/*/site.caddy
